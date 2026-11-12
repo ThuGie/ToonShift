@@ -6,10 +6,12 @@ ToonShift is a native Rust touchscreen interface for the Eneco Toon 2. It draws 
 
 ## On the device
 
-- View room temperature, adjust the setpoint, toggle the existing program, and browse its weekly schedule.
-- Choose automatic, day, or night appearance and one of three color themes.
-- Install widgets from Store. Home has four widget slots per page and supports up to eight pages. Tap **Edit tiles**, choose a tile, and then choose its destination. The page arrows work while editing.
-- Use **Settings → Wi-Fi** to scan for nearby networks. Use **Open stock Wi-Fi setup** to join a network or change saved credentials from the original interface.
+- View the firmware's compensated room temperature, adjust the setpoint, and toggle the existing program. Choose a day in **Schedule** and tap **Edit** to change, split, or remove a heating period. Use **Add period** when the day has an open interval.
+- Choose automatic, day, or night appearance, adjust the display brightness and idle screen, and select **English** or **Nederlands**.
+- Install widgets from Store. Home has four widget slots per page and supports up to eight pages. Tap **Edit tiles**, choose a tile, and then choose its destination. The page arrows work while editing. Tap the installed Weather tile to open its forecast and location settings.
+- Use **Energy** to browse electricity, gas, solar, and water archives across hourly, daily, weekly, monthly, and yearly ranges. Available charts depend on the connected meter and the samples it has saved.
+- Use **Settings → Wi-Fi** to scan for and join networks. WPA/WPA2 credentials go directly to the local firmware service.
+- Open **Schedule → Presets** to adjust the saved heating modes. Tap the Boiler tile for heating history and sensor information.
 - Use the authenticated, loopback-only [ToonShift control API](docs/api.md) for integration over SSH.
 
 ## Build and install
@@ -36,6 +38,7 @@ When updating an active install, upload the binary under a temporary name and ru
 ## Project docs
 
 - [Parity and performance roadmap](docs/roadmap.md)
+- [Firmware 6.4.5 parity matrix and device checks](docs/parity-6.4.5.md)
 - [Firmware API inventory and ToonShift control API](docs/api.md)
 - [Plugin format and additional repositories](docs/plugins.md)
 - [Official ToonShift plugin catalog](https://github.com/ThuGie/ToonShift-plugins)

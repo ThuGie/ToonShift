@@ -25,6 +25,11 @@ enum Page {
     Store,
     Settings,
     Network,
+    Plugin,
+    Presets,
+    Energy,
+    HeatingDetails,
+    Display,
 }
 
 #[derive(Clone, Copy)]
@@ -33,10 +38,51 @@ pub enum Action {
     Schedule,
     ScheduleDay(usize),
     SchedulePage(usize),
+    OpenSlot(crate::schedule::Slot),
+    NewSlot(crate::schedule::Slot),
+    ShiftSlot(bool, i16),
+    OpenCopyDay,
+    CopyDestinations(u8),
+    Preset(u8),
+    CloseSlot,
+    EditSchedule(crate::schedule::Edit),
     Store,
     Settings,
     Network,
     NetworkPage(usize),
+    ChooseNetwork(usize),
+    HiddenNetwork,
+    CloseNetworkForm,
+    NetworkField(bool),
+    Key(char),
+    Backspace,
+    KeyboardMode,
+    KeyboardShift,
+    JoinNetwork,
+    RepositoryEntry,
+    CloseRepository,
+    SyncRepository,
+    RefreshOfficial,
+    Presets,
+    EditPreset(crate::presets::Preset),
+    AdjustPreset(i32),
+    ToggleHotWater,
+    ClosePreset,
+    SavePreset(crate::presets::Preset),
+    Language(crate::language::Language),
+    Energy(crate::energy::Meter, crate::energy::Period),
+    HeatingDetails,
+    Display,
+    Brightness(bool, i8),
+    AppearanceHour(bool, i8),
+    IdleMinutes(u8),
+    OpenPlugin(usize),
+    PluginSettings,
+    PluginPlace(usize, usize),
+    WeatherSearch,
+    RunWeatherSearch,
+    CloseWeatherSearch,
+    UseWeatherPlace(usize, usize),
     DashboardPage(usize),
     EditTiles,
     Tile(usize),
@@ -61,11 +107,7 @@ struct Palette {
 }
 
 fn palette(settings: &Settings, hour: u8) -> Palette {
-    let light = match settings.appearance {
-        Appearance::Auto => (7..20).contains(&hour),
-        Appearance::Day => true,
-        Appearance::Night => false,
-    };
+    let light = settings.daylight(hour);
     let (background, card, raised, accent) = match (light, settings.theme) {
         (true, Theme::Midnight) => (0xeaf1f8, 0xffffff, 0xdce9f5, 0x095abb),
         (true, Theme::Forest) => (0xe7f1eb, 0xffffff, 0xd7ebdf, 0x167050),
@@ -94,7 +136,18 @@ pub struct Ui {
     offset: usize,
     day: usize,
     schedule_page: usize,
+    editing_slot: Option<(Option<crate::schedule::Slot>, crate::schedule::Slot)>,
+    copy_days: Option<u8>,
     network_page: usize,
+    open_plugin: usize,
+    plugin_settings: bool,
+    wifi: Option<WifiForm>,
+    repository: Option<TextEntry>,
+    weather_search: bool,
+    preset_editor: Option<crate::presets::Preset>,
+    energy: (crate::energy::Meter, crate::energy::Period),
+    language: crate::language::Language,
+    mark: Vec<u32>,
     dashboard_page: usize,
     editing: bool,
     selected_tile: Option<usize>,
@@ -116,7 +169,21 @@ impl Ui {
             offset: 0,
             day: 0,
             schedule_page: 0,
+            editing_slot: None,
+            copy_days: None,
             network_page: 0,
+            open_plugin: 0,
+            plugin_settings: false,
+            wifi: None,
+            repository: None,
+            weather_search: false,
+            preset_editor: None,
+            energy: (
+                crate::energy::Meter::Electricity,
+                crate::energy::Period::Day,
+            ),
+            language: Default::default(),
+            mark: Vec::new(),
             dashboard_page: 0,
             editing: false,
             selected_tile: None,
@@ -195,6 +262,25 @@ impl Ui {
 
     fn text(
         &mut self,
+        x: usize,
+        baseline: usize,
+        value: &str,
+        size: u16,
+        color: u32,
+        right: usize,
+    ) {
+        self.raw_text(
+            x,
+            baseline,
+            self.language.translate(value),
+            size,
+            color,
+            right,
+        );
+    }
+
+    fn raw_text(
+        &mut self,
         mut x: usize,
         baseline: usize,
         value: &str,
@@ -251,13 +337,23 @@ impl Ui {
             (palette.raised, palette.text)
         };
         self.panel(rect, background, 14);
-        let size = 22;
-        let width: f32 = label
+        let label = if matches!(
+            action,
+            Action::PluginPlace(_, _) | Action::UseWeatherPlace(_, _) | Action::Key(_)
+        ) {
+            label
+        } else {
+            self.language.translate(label)
+        };
+        let nominal: f32 = label
             .chars()
-            .map(|c| self.font.metrics(c, size as f32).advance_width)
+            .map(|c| self.font.metrics(c, 22.0).advance_width)
             .sum();
+        let available = rect.2.saturating_sub(16) as f32;
+        let size = (22.0 * available / nominal.max(1.0)).clamp(14.0, 22.0) as u16;
+        let width = nominal * f32::from(size) / 22.0;
         let inset = rect.2.saturating_sub(width.ceil() as usize) / 2;
-        self.text(
+        self.raw_text(
             rect.0 + inset,
             rect.1 + rect.3 / 2 + 8,
             label,
@@ -279,10 +375,152 @@ impl Ui {
             self.editing = false;
             self.selected_tile = None;
         }
+        if matches!(
+            action,
+            Action::Home | Action::Schedule | Action::Store | Action::Settings
+        ) {
+            self.wifi = None;
+            self.repository = None;
+        }
         match action {
+            Action::WeatherSearch => {
+                self.weather_search = true;
+                self.repository = Some(TextEntry::default());
+                return Some(action);
+            }
+            Action::CloseWeatherSearch => {
+                self.weather_search = false;
+                self.repository = None;
+            }
+            Action::UseWeatherPlace(_, _) => {
+                self.weather_search = false;
+                self.repository = None;
+                self.plugin_settings = false;
+                return Some(action);
+            }
+            Action::Display => self.page = Page::Display,
+            Action::HeatingDetails => {
+                self.page = Page::HeatingDetails;
+                self.wifi = None;
+                self.repository = None;
+                self.editing = false;
+                self.selected_tile = None;
+                return Some(action);
+            }
+            Action::Energy(meter, period) => {
+                self.page = Page::Energy;
+                self.energy = (meter, period);
+                self.wifi = None;
+                self.repository = None;
+                self.editing = false;
+                self.selected_tile = None;
+                return Some(action);
+            }
+            Action::RepositoryEntry => self.repository = Some(TextEntry::default()),
+            Action::CloseRepository => self.repository = None,
+            Action::Presets => {
+                self.page = Page::Presets;
+                self.preset_editor = None;
+                return Some(action);
+            }
+            Action::EditPreset(preset) => self.preset_editor = Some(preset),
+            Action::AdjustPreset(delta) => {
+                if let Some(preset) = &mut self.preset_editor {
+                    preset.temperature = (preset.temperature + delta).clamp(600, 3000);
+                }
+            }
+            Action::ToggleHotWater => {
+                if let Some(preset) = &mut self.preset_editor {
+                    preset.hot_water = !preset.hot_water;
+                }
+            }
+            Action::ClosePreset => self.preset_editor = None,
+            Action::SavePreset(_) => {
+                self.preset_editor = None;
+                return Some(action);
+            }
+            Action::CloseNetworkForm => self.wifi = None,
+            Action::NetworkField(password) => {
+                if let Some(form) = &mut self.wifi {
+                    form.password_field = password;
+                }
+            }
+            Action::Key(key) => {
+                if let Some(form) = &mut self.wifi {
+                    let target = if form.password_field {
+                        &mut form.join.password
+                    } else {
+                        &mut form.join.name
+                    };
+                    let limit = if form.password_field { 64 } else { 32 };
+                    if target.len() + key.len_utf8() <= limit {
+                        target.push(key);
+                    }
+                } else if let Some(entry) = &mut self.repository {
+                    if entry.text.len() < 185 {
+                        entry.text.push(key);
+                    }
+                }
+            }
+            Action::Backspace => {
+                if let Some(form) = &mut self.wifi {
+                    if form.password_field {
+                        form.join.password.pop();
+                    } else {
+                        form.join.name.pop();
+                    }
+                } else if let Some(entry) = &mut self.repository {
+                    entry.text.pop();
+                }
+            }
+            Action::KeyboardMode => {
+                if let Some(form) = &mut self.wifi {
+                    form.symbols = !form.symbols;
+                } else if let Some(entry) = &mut self.repository {
+                    entry.symbols = !entry.symbols;
+                }
+            }
+            Action::KeyboardShift => {
+                if let Some(form) = &mut self.wifi {
+                    form.shift = !form.shift;
+                } else if let Some(entry) = &mut self.repository {
+                    entry.shift = !entry.shift;
+                }
+            }
+            Action::OpenPlugin(index) => {
+                self.page = Page::Plugin;
+                self.open_plugin = index;
+                self.plugin_settings = false;
+                self.weather_search = false;
+            }
+            Action::PluginSettings => self.plugin_settings = !self.plugin_settings,
+            Action::OpenSlot(slot) => self.editing_slot = Some((Some(slot), slot)),
+            Action::NewSlot(slot) => self.editing_slot = Some((None, slot)),
+            Action::ShiftSlot(end, offset) => {
+                if let Some((_, slot)) = &mut self.editing_slot {
+                    slot.shift(end, offset);
+                }
+            }
+            Action::Preset(preset) => {
+                if let Some((_, slot)) = &mut self.editing_slot {
+                    slot.preset = preset;
+                }
+            }
+            Action::OpenCopyDay => self.copy_days = Some(0),
+            Action::CopyDestinations(days) => self.copy_days = Some(days),
+            Action::CloseSlot => {
+                self.editing_slot = None;
+                self.copy_days = None;
+            }
+            Action::EditSchedule(_) => {
+                self.editing_slot = None;
+                self.copy_days = None;
+                return Some(action);
+            }
             Action::Home => self.page = Page::Home,
             Action::Schedule => {
                 self.page = Page::Schedule;
+                self.editing_slot = None;
                 self.stock_confirm = false;
                 return Some(action);
             }
@@ -300,6 +538,7 @@ impl Ui {
             Action::Network => {
                 self.page = Page::Network;
                 self.network_page = 0;
+                self.wifi = None;
                 self.stock_confirm = false;
                 return Some(action);
             }
@@ -326,25 +565,136 @@ impl Ui {
         None
     }
 
+    pub fn gesture(
+        &mut self,
+        from: (usize, usize),
+        to: (usize, usize),
+        tiles: usize,
+    ) -> Option<Action> {
+        let dx = from.0.abs_diff(to.0);
+        let dy = from.1.abs_diff(to.1);
+        if dx.max(dy) < 28 {
+            return self.hit(to.0, to.1);
+        }
+        if self.page != Page::Home || from.0 < 584 {
+            return None;
+        }
+        if self.editing {
+            let slot = |point: (usize, usize)| {
+                self.buttons.iter().find_map(|(rect, action)| {
+                    if let Action::Tile(index) = action {
+                        if rect.contains(point.0, point.1) {
+                            return Some(*index);
+                        }
+                    }
+                    None
+                })
+            };
+            let source = slot(from)?;
+            let destination = slot(to)?;
+            self.selected_tile = None;
+            return (source != destination).then_some(Action::MoveTile(source, destination));
+        }
+        if dx > 100 && dx > dy * 2 {
+            self.dashboard_page = if from.0 > to.0 {
+                (self.dashboard_page + 1).min(tiles.div_ceil(4).saturating_sub(1))
+            } else {
+                self.dashboard_page.saturating_sub(1)
+            };
+        }
+        None
+    }
+
     pub fn reset_store_page(&mut self) {
         self.offset = 0;
     }
 
+    pub fn wifi_form(&mut self, network: Option<&NetworkRow>) {
+        let (name, encryption, auth) = network.map_or_else(
+            || (String::new(), "autodetect".to_owned(), "WPA2".to_owned()),
+            |network| {
+                (
+                    network.name.clone(),
+                    network.encryption.clone(),
+                    network.auth.to_ascii_uppercase(),
+                )
+            },
+        );
+        let password_field = network.is_some() && !matches!(auth.as_str(), "OPEN" | "NONE");
+        self.wifi = Some(WifiForm {
+            join: crate::network::Join {
+                name,
+                encryption,
+                auth,
+                password: String::new(),
+            },
+            hidden: network.is_none(),
+            password_field,
+            shift: false,
+            symbols: false,
+        });
+    }
+
+    pub fn take_wifi(&mut self) -> Option<crate::network::Join> {
+        self.wifi.take().map(|form| form.join)
+    }
+
+    pub fn take_repository(&mut self) -> Option<String> {
+        self.repository.take().map(|entry| entry.text)
+    }
+
     pub fn draw(&mut self, view: &View<'_>) {
+        self.language = view.settings.language;
         let p = palette(view.settings, view.hour);
         self.pixels.fill(p.background);
         self.buttons.clear();
-        self.logo(32, 22, 48);
+        if view.ambient {
+            self.text(66, 244, view.time, 126, p.text, 950);
+            self.text(
+                73,
+                337,
+                &temperature(view.status.map(|s| s.current_temp.as_str())),
+                60,
+                p.muted,
+                950,
+            );
+            self.text(76, 432, "Tap to wake", 23, p.muted, 955);
+            return;
+        }
+        if self.mark.is_empty() {
+            self.logo(32, 22, 48);
+            for row in 22..70 {
+                self.mark.extend(
+                    self.pixels[row * WIDTH + 32..row * WIDTH + 80]
+                        .iter()
+                        .map(|color| if *color == p.background { 0 } else { *color }),
+                );
+            }
+        } else {
+            for (row, colors) in self.mark.as_chunks::<48>().0.iter().enumerate() {
+                for (col, color) in colors.iter().enumerate().filter(|(_, color)| **color != 0) {
+                    self.pixels[(row + 22) * WIDTH + col + 32] = *color;
+                }
+            }
+        }
         self.text(92, 56, "ToonShift", 31, p.text, 270);
-        for (x, title, page, action) in [
-            (282, "Schedule", Page::Schedule, Action::Schedule),
-            (424, "Home", Page::Home, Action::Home),
-            (566, "Store", Page::Store, Action::Store),
-            (708, "Settings", Page::Settings, Action::Settings),
+        for (x, width, title, page, action) in [
+            (270, 126, "Schedule", Page::Schedule, Action::Schedule),
+            (405, 94, "Home", Page::Home, Action::Home),
+            (
+                508,
+                105,
+                "Energy",
+                Page::Energy,
+                Action::Energy(self.energy.0, self.energy.1),
+            ),
+            (622, 96, "Store", Page::Store, Action::Store),
+            (727, 120, "Settings", Page::Settings, Action::Settings),
         ] {
-            let selected =
-                self.page == page || (page == Page::Settings && self.page == Page::Network);
-            self.button(Rect(x, 18, 130, 54), title, &p, selected, action);
+            let selected = self.page == page
+                || (page == Page::Settings && self.page == Page::Network)
+                || (page == Page::Schedule && self.page == Page::Presets);
+            self.button(Rect(x, 18, width, 54), title, &p, selected, action);
         }
         self.text(900, 52, view.time, 24, p.muted, 992);
         match self.page {
@@ -353,15 +703,167 @@ impl Ui {
             Page::Store => self.store(view, &p),
             Page::Settings => self.settings(view, &p),
             Page::Network => self.network(view, &p),
+            Page::Plugin => self.plugin(view, &p),
+            Page::Presets => self.presets(view, &p),
+            Page::Energy => self.energy(view, &p),
+            Page::HeatingDetails => self.heating_details(view, &p),
+            Page::Display => self.display_settings(view, &p),
         }
         if let Some(error) = view.error {
             self.text(32, 581, error, 19, p.text, 992);
         }
     }
 
+    fn plugin(&mut self, view: &View<'_>, p: &Palette) {
+        let Some(plugin) = view.plugins.get(self.open_plugin) else {
+            return;
+        };
+        let Some(feed) = &plugin.feed else {
+            return;
+        };
+        if self.weather_search {
+            self.weather_search_view(view, p);
+            return;
+        }
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 148, &plugin.title, 32, p.text, 600);
+        self.button(
+            Rect(757, 117, 209, 47),
+            if self.plugin_settings {
+                "Back to forecast"
+            } else {
+                "Change location"
+            },
+            p,
+            false,
+            Action::PluginSettings,
+        );
+        let active = crate::feed::location(plugin, view.settings);
+        let location =
+            crate::feed::place(plugin, view.settings).map_or("", |place| place.name.as_str());
+        let reading = view.readings.get(&plugin.id);
+        if !self.plugin_settings {
+            self.raw_text(56, 204, location, 26, p.text, 960);
+            if let Some(reading) = reading {
+                self.text(
+                    56,
+                    253,
+                    &format!(
+                        "{}  {}",
+                        self.language.translate(&reading.value),
+                        self.language.translate(&reading.detail)
+                    ),
+                    32,
+                    p.text,
+                    965,
+                );
+                for (i, day) in reading.forecast.iter().enumerate() {
+                    let y = 305 + i * 46;
+                    self.text(56, y, &day.date, 21, p.muted, 320);
+                    self.text(335, y, &day.temperatures, 21, p.text, 600);
+                    self.text(631, y, &day.condition, 21, p.muted, 960);
+                }
+            } else {
+                self.text(56, 253, "Loading…", 23, p.muted, 960);
+            }
+            return;
+        }
+        self.text(56, 198, "Location", 23, p.muted, 960);
+        self.button(
+            Rect(755, 168, 211, 45),
+            "Search location",
+            p,
+            false,
+            Action::WeatherSearch,
+        );
+        for (index, place) in feed.places.iter().enumerate() {
+            self.button(
+                Rect(56 + index % 4 * 229, 218 + index / 4 * 46, 214, 42),
+                &place.name,
+                p,
+                active == index && !view.settings.custom_locations.contains_key(&plugin.id),
+                Action::PluginPlace(self.open_plugin, index),
+            );
+        }
+        self.text(
+            56,
+            525,
+            &format!("Version {}", plugin.release),
+            18,
+            p.muted,
+            960,
+        );
+    }
+
+    fn weather_search_view(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 148, "Search location", 30, p.text, 960);
+        if let Some(entry) = self.repository.take() {
+            if entry.text.is_empty() {
+                self.text(56, 199, "City or postcode", 23, p.muted, 965);
+            } else {
+                self.raw_text(56, 199, &entry.text, 23, p.text, 965);
+            }
+            self.keyboard(entry.symbols, entry.shift, p);
+            self.repository = Some(entry);
+            self.button(
+                Rect(752, 473, 215, 52),
+                "Search",
+                p,
+                true,
+                Action::RunWeatherSearch,
+            );
+        } else {
+            match view.weather_results {
+                Some(Ok(results)) if !results.is_empty() => {
+                    for (index, place) in results.iter().enumerate() {
+                        self.button(
+                            Rect(56, 198 + index * 49, 906, 43),
+                            &place.name,
+                            p,
+                            false,
+                            Action::UseWeatherPlace(self.open_plugin, index),
+                        );
+                    }
+                }
+                Some(Ok(_)) => self.text(56, 264, "No matching locations", 23, p.muted, 960),
+                Some(Err(error)) => self.text(56, 264, error, 23, p.muted, 960),
+                None => self.text(56, 264, "Searching…", 23, p.muted, 960),
+            }
+            if view.weather_results.is_some() {
+                self.button(
+                    Rect(752, 473, 215, 52),
+                    "Search again",
+                    p,
+                    false,
+                    Action::WeatherSearch,
+                );
+            }
+        }
+        self.button(
+            Rect(56, 473, 212, 52),
+            "Cancel",
+            p,
+            false,
+            Action::CloseWeatherSearch,
+        );
+    }
+
     fn network(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        if let Some(form) = self.wifi.take() {
+            self.wifi_keyboard(&form, p);
+            self.wifi = Some(form);
+            return;
+        }
         self.text(56, 148, "Wi-Fi", 28, p.text, 600);
+        self.button(
+            Rect(565, 117, 220, 48),
+            "Hidden network",
+            p,
+            false,
+            Action::HiddenNetwork,
+        );
         self.button(
             Rect(807, 117, 160, 48),
             "Scan again",
@@ -386,8 +888,15 @@ impl Ui {
         let page = self.network_page.min(networks.len().saturating_sub(1) / 5);
         for (row, network) in networks.iter().skip(page * 5).take(5).enumerate() {
             let y = 204 + row * 49;
-            self.text(56, y, &network.name, 23, p.text, 590);
-            self.text(650, y, &network.signal, 20, p.muted, 960);
+            self.raw_text(56, y, &network.name, 23, p.text, 590);
+            self.text(610, y, &network.signal, 20, p.muted, 790);
+            self.button(
+                Rect(822, y - 29, 145, 39),
+                "Join",
+                p,
+                false,
+                Action::ChooseNetwork(page * 5 + row),
+            );
         }
         if page > 0 {
             self.button(
@@ -407,25 +916,285 @@ impl Ui {
                 Action::NetworkPage(page + 1),
             );
         }
-        let label = if self.stock_confirm {
-            "Confirm switch to stock"
+        if let Some(message) = view.network_message {
+            self.text(56, 515, message, 20, p.muted, 963);
+        }
+    }
+
+    fn wifi_keyboard(&mut self, form: &WifiForm, p: &Palette) {
+        let open = matches!(form.join.auth.as_str(), "OPEN" | "NONE");
+        self.text(56, 148, "Join Wi-Fi", 28, p.text, 960);
+        let name = if form.join.name.is_empty() {
+            "Network name"
         } else {
-            "Open stock Wi-Fi setup"
+            &form.join.name
         };
-        self.button(Rect(56, 484, 324, 47), label, p, false, Action::Stock);
-        self.text(
-            403,
-            515,
-            "In stock settings, open Internet.",
-            20,
-            p.muted,
-            963,
+        if form.hidden {
+            self.button(
+                Rect(56, 165, 422, 50),
+                name,
+                p,
+                !form.password_field,
+                Action::NetworkField(false),
+            );
+        } else {
+            self.raw_text(56, 199, name, 24, p.text, 478);
+        }
+        if !open {
+            let mask = if form.join.password.is_empty() {
+                "Password".to_owned()
+            } else {
+                let count = form.join.password.len();
+                format!("{}  ({count})", "•".repeat(count.min(14)))
+            };
+            self.button(
+                Rect(492, 165, 472, 50),
+                &mask,
+                p,
+                form.password_field,
+                Action::NetworkField(true),
+            );
+        }
+        if !open || form.hidden {
+            self.keyboard(form.symbols, form.shift, p);
+        }
+        self.button(
+            Rect(56, 473, 212, 52),
+            "Cancel",
+            p,
+            false,
+            Action::CloseNetworkForm,
+        );
+        self.button(
+            Rect(752, 473, 215, 52),
+            "Join network",
+            p,
+            true,
+            Action::JoinNetwork,
+        );
+    }
+
+    fn keyboard(&mut self, symbols: bool, shift: bool, p: &Palette) {
+        let rows = if symbols {
+            if shift {
+                ["1234567890", "`~[]{}<>\\|", "'\";:,.?/_-"]
+            } else {
+                ["1234567890", "!@#$%^&*()", "-_=+[]{}\\|"]
+            }
+        } else {
+            ["qwertyuiop", "asdfghjkl", "zxcvbnm,./"]
+        };
+        for (row, keys) in rows.iter().enumerate() {
+            for (column, key) in keys.chars().enumerate() {
+                let key = if shift && !symbols {
+                    key.to_ascii_uppercase()
+                } else {
+                    key
+                };
+                self.button(
+                    Rect(56 + 91 * column, 229 + 53 * row, 81, 47),
+                    &key.to_string(),
+                    p,
+                    false,
+                    Action::Key(key),
+                );
+            }
+        }
+        self.button(
+            Rect(56, 390, 173, 52),
+            if symbols { "ABC" } else { "123 / #+=" },
+            p,
+            false,
+            Action::KeyboardMode,
+        );
+        self.button(
+            Rect(238, 390, 173, 52),
+            if symbols { "More" } else { "Shift" },
+            p,
+            shift,
+            Action::KeyboardShift,
+        );
+        self.button(Rect(420, 390, 264, 52), "Space", p, false, Action::Key(' '));
+        self.button(
+            Rect(693, 390, 274, 52),
+            "Backspace",
+            p,
+            false,
+            Action::Backspace,
         );
     }
 
     fn schedule(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        if let Some(days) = self.copy_days {
+            self.text(56, 147, "Copy heating day", 28, p.text, 964);
+            self.text(
+                56,
+                200,
+                "Replace the schedule on the selected days.",
+                22,
+                p.muted,
+                960,
+            );
+            let source = 1u8 << self.day;
+            for (day, name) in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                .into_iter()
+                .enumerate()
+            {
+                let bit = 1u8 << day;
+                if bit != source {
+                    self.button(
+                        Rect(56 + day * 132, 229, 120, 54),
+                        name,
+                        p,
+                        days & bit != 0,
+                        Action::CopyDestinations(days ^ bit),
+                    );
+                }
+            }
+            self.button(
+                Rect(56, 320, 220, 54),
+                "Weekdays",
+                p,
+                false,
+                Action::CopyDestinations(0x3e & !source),
+            );
+            self.button(
+                Rect(295, 320, 220, 54),
+                "Weekend",
+                p,
+                false,
+                Action::CopyDestinations(0x41 & !source),
+            );
+            self.button(
+                Rect(56, 461, 160, 58),
+                "Cancel",
+                p,
+                false,
+                Action::CloseSlot,
+            );
+            if days != 0 {
+                self.button(
+                    Rect(800, 461, 160, 58),
+                    "Copy",
+                    p,
+                    true,
+                    Action::EditSchedule(crate::schedule::Edit::CopyDay {
+                        source: self.day as u8,
+                        days,
+                    }),
+                );
+            }
+            return;
+        }
+        if let Some((original, slot)) = self.editing_slot {
+            self.text(
+                56,
+                147,
+                if original.is_some() {
+                    "Edit heating period"
+                } else {
+                    "Add heating period"
+                },
+                28,
+                p.text,
+                964,
+            );
+            for (end, title, x) in [(false, "Starts", 56), (true, "Ends", 520)] {
+                self.text(x, 205, title, 23, p.muted, x + 400);
+                self.button(
+                    Rect(x, 223, 68, 55),
+                    "−15",
+                    p,
+                    false,
+                    Action::ShiftSlot(end, -15),
+                );
+                self.text(x + 86, 258, &slot.label(end), 26, p.text, x + 310);
+                self.button(
+                    Rect(x + 82, 274, 70, 33),
+                    "−1",
+                    p,
+                    false,
+                    Action::ShiftSlot(end, -1),
+                );
+                self.button(
+                    Rect(x + 185, 274, 70, 33),
+                    "+1",
+                    p,
+                    false,
+                    Action::ShiftSlot(end, 1),
+                );
+                self.button(
+                    Rect(x + 300, 223, 72, 55),
+                    "+15",
+                    p,
+                    false,
+                    Action::ShiftSlot(end, 15),
+                );
+            }
+            for (preset, label) in ["Comfort", "Home", "Sleep", "Away"].into_iter().enumerate() {
+                self.button(
+                    Rect(56 + preset * 229, 310, 205, 56),
+                    label,
+                    p,
+                    slot.preset == preset as u8,
+                    Action::Preset(preset as u8),
+                );
+            }
+            self.text(
+                56,
+                410,
+                "Shared boundaries move with adjacent periods.",
+                20,
+                p.muted,
+                960,
+            );
+            self.button(
+                Rect(56, 461, 160, 58),
+                "Cancel",
+                p,
+                false,
+                Action::CloseSlot,
+            );
+            if let Some(original) = original {
+                self.button(
+                    Rect(245, 461, 160, 58),
+                    "Split",
+                    p,
+                    false,
+                    Action::EditSchedule(crate::schedule::Edit::Split { slot: original }),
+                );
+                self.button(
+                    Rect(434, 461, 160, 58),
+                    "Remove",
+                    p,
+                    false,
+                    Action::EditSchedule(crate::schedule::Edit::Remove { slot: original }),
+                );
+            }
+            self.button(
+                Rect(800, 461, 160, 58),
+                "Save",
+                p,
+                true,
+                Action::EditSchedule(match original {
+                    Some(original) => crate::schedule::Edit::Replace {
+                        original,
+                        new: slot,
+                    },
+                    None => crate::schedule::Edit::Add { slot },
+                }),
+            );
+            return;
+        }
         self.text(56, 147, "Weekly schedule", 28, p.text, 964);
+        self.button(
+            Rect(560, 112, 180, 49),
+            "Presets",
+            p,
+            false,
+            Action::Presets,
+        );
         for (day, label) in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
             .into_iter()
             .enumerate()
@@ -449,16 +1218,43 @@ impl Ui {
                 return;
             }
         };
-        let rows: Vec<_> = slots.iter().filter(|slot| slot.day == self.day).collect();
+        self.button(
+            Rect(372, 112, 170, 49),
+            "Copy day",
+            p,
+            false,
+            Action::OpenCopyDay,
+        );
+        let rows: Vec<_> = slots
+            .iter()
+            .copied()
+            .filter(|slot| slot.day() == self.day)
+            .collect();
+        if let Some(slot) = crate::schedule::open_period(self.day, slots) {
+            self.button(
+                Rect(758, 112, 208, 49),
+                "Add period",
+                p,
+                false,
+                Action::NewSlot(slot),
+            );
+        }
         if rows.is_empty() {
             self.text(56, 270, "No entries for this day", 23, p.muted, 964);
         }
         let page = self.schedule_page.min(rows.len().saturating_sub(1) / 5);
         for (row, slot) in rows.iter().skip(page * 5).take(5).enumerate() {
             let y = 272 + row * 46;
-            let times = format!("{} – {}", slot.start, slot.end);
+            let times = format!("{} – {}", slot.label(false), slot.label(true));
             self.text(56, y, &times, 23, p.muted, 400);
-            self.text(414, y, &slot.preset, 23, p.text, 966);
+            self.text(414, y, slot.preset_name(), 23, p.text, 752);
+            self.button(
+                Rect(824, y - 30, 142, 40),
+                "Edit",
+                p,
+                false,
+                Action::OpenSlot(*slot),
+            );
         }
         if page > 0 {
             self.button(
@@ -477,6 +1273,118 @@ impl Ui {
                 false,
                 Action::SchedulePage(page + 1),
             );
+        }
+    }
+
+    fn presets(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        if let Some(preset) = self.preset_editor {
+            self.text(
+                56,
+                152,
+                crate::presets::NAMES[usize::from(preset.id)],
+                30,
+                p.text,
+                960,
+            );
+            self.text(56, 227, "Target temperature", 24, p.muted, 960);
+            self.button(
+                Rect(56, 248, 82, 58),
+                "−",
+                p,
+                false,
+                Action::AdjustPreset(-50),
+            );
+            self.text(
+                166,
+                291,
+                &format!("{:.1}°C", f64::from(preset.temperature) / 100.0),
+                33,
+                p.text,
+                422,
+            );
+            self.button(
+                Rect(442, 248, 82, 58),
+                "+",
+                p,
+                false,
+                Action::AdjustPreset(50),
+            );
+            self.button(
+                Rect(56, 330, 310, 58),
+                if preset.hot_water {
+                    "Hot water on"
+                } else {
+                    "Hot water off"
+                },
+                p,
+                preset.hot_water,
+                Action::ToggleHotWater,
+            );
+            self.button(
+                Rect(56, 461, 190, 55),
+                "Cancel",
+                p,
+                false,
+                Action::ClosePreset,
+            );
+            self.button(
+                Rect(775, 461, 190, 55),
+                "Save",
+                p,
+                true,
+                Action::SavePreset(preset),
+            );
+            return;
+        }
+        self.text(56, 152, "Heating presets", 30, p.text, 560);
+        self.button(
+            Rect(728, 115, 238, 48),
+            "Weekly schedule",
+            p,
+            false,
+            Action::Schedule,
+        );
+        match view.presets {
+            Some(Ok(presets)) => {
+                for (index, preset) in presets.iter().enumerate() {
+                    let y = 179 + index * 67;
+                    self.text(
+                        56,
+                        y + 34,
+                        crate::presets::NAMES[usize::from(preset.id)],
+                        23,
+                        p.text,
+                        347,
+                    );
+                    self.text(
+                        358,
+                        y + 34,
+                        &format!("{:.1}°C", f64::from(preset.temperature) / 100.0),
+                        23,
+                        p.muted,
+                        567,
+                    );
+                    self.button(
+                        Rect(624, y, 143, 51),
+                        "Edit",
+                        p,
+                        false,
+                        Action::EditPreset(*preset),
+                    );
+                    if !view.pending {
+                        self.button(
+                            Rect(799, y, 167, 51),
+                            "Use preset",
+                            p,
+                            true,
+                            Action::Heat(Command::ApplyPreset(preset.id)),
+                        );
+                    }
+                }
+            }
+            Some(Err(error)) => self.text(56, 223, error, 23, p.muted, 960),
+            None => self.text(56, 223, "Loading presets…", 23, p.muted, 960),
         }
     }
 
@@ -564,7 +1472,12 @@ impl Ui {
                 (p.card, p.text, p.muted)
             };
             self.panel(rect, fill, 22);
-            if let Some(plugin) = view.plugins.iter().find(|plugin| &plugin.id == id) {
+            if let Some((plugin_index, plugin)) = view
+                .plugins
+                .iter()
+                .enumerate()
+                .find(|(_, plugin)| &plugin.id == id)
+            {
                 self.text(x + 16, y + 47, &plugin.title, 21, muted, x + 182);
                 self.text(
                     x + 16,
@@ -574,6 +1487,16 @@ impl Ui {
                     ink,
                     x + 182,
                 );
+                if !self.editing && matches!(plugin.source, Source::HttpsJson) {
+                    let detail = crate::feed::place(plugin, view.settings)
+                        .map_or("", |place| place.name.as_str());
+                    self.raw_text(x + 16, y + 155, detail, 17, muted, x + 182);
+                    self.buttons.push((rect, Action::OpenPlugin(plugin_index)));
+                }
+                if !self.editing && matches!(plugin.source, Source::Boiler) {
+                    self.text(x + 16, y + 155, "Details", 17, muted, x + 182);
+                    self.buttons.push((rect, Action::HeatingDetails));
+                }
             } else {
                 self.text(x + 16, y + 47, id, 20, muted, x + 182);
                 self.text(x + 16, y + 113, "Unavailable", 23, ink, x + 182);
@@ -635,7 +1558,272 @@ impl Ui {
         }
     }
 
+    fn energy(&mut self, view: &View<'_>, p: &Palette) {
+        use crate::energy::{Meter, Period};
+        let (meter, period) = self.energy;
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        for (index, choice) in Meter::ALL.into_iter().enumerate() {
+            self.button(
+                Rect(54 + 184 * index, 117, 172, 48),
+                choice.title(),
+                p,
+                choice == meter,
+                Action::Energy(choice, period),
+            );
+        }
+        for (index, choice) in Period::ALL.into_iter().enumerate() {
+            self.button(
+                Rect(54 + 184 * index, 177, 172, 43),
+                choice.title(),
+                p,
+                choice == period,
+                Action::Energy(meter, choice),
+            );
+        }
+        let chart = match view.energy {
+            Some(Ok(chart)) => chart,
+            Some(Err(error)) => {
+                self.text(56, 281, error, 22, p.muted, 963);
+                return;
+            }
+            None => {
+                self.text(56, 281, "Loading meter history…", 22, p.muted, 963);
+                return;
+            }
+        };
+        let values = || chart.bars.iter().copied().flatten();
+        if values().next().is_none() {
+            self.text(
+                56,
+                281,
+                "No meter readings in this period.",
+                22,
+                p.muted,
+                963,
+            );
+            return;
+        }
+        let min = values().fold(0.0, f64::min);
+        let max = values().fold(0.0, f64::max);
+        let scale = (max - min).max(1e-6);
+        let top = 303;
+        let bottom = 490;
+        let plot_y =
+            |value: f64| top + ((max - value) / scale * (bottom - top) as f64).round() as usize;
+        let zero = if min == max { bottom } else { plot_y(0.0) };
+        let left = 161;
+        let width = 797;
+        self.panel(Rect(left, zero, width, 1), p.muted, 0);
+        for (index, value) in chart.bars.iter().enumerate() {
+            let x = left + index * width / chart.bars.len();
+            let next = left + (index + 1) * width / chart.bars.len();
+            if let Some(value) = value {
+                let y = if *value == 0.0 { zero } else { plot_y(*value) };
+                self.panel(
+                    Rect(
+                        x + 2,
+                        y.min(zero),
+                        (next - x).saturating_sub(4).max(1),
+                        y.abs_diff(zero).max(2),
+                    ),
+                    p.accent,
+                    0,
+                );
+            }
+        }
+        self.text(
+            56,
+            318,
+            &format!("{max:.1} {}", chart.unit),
+            17,
+            p.muted,
+            155,
+        );
+        self.text(
+            56,
+            494,
+            &format!("{min:.1} {}", chart.unit),
+            17,
+            p.muted,
+            155,
+        );
+        let summary = chart.total.map_or_else(
+            || self.language.translate("Average per interval").to_owned(),
+            |total| {
+                format!(
+                    "{} {total:.2} {}",
+                    self.language.translate("Recorded total"),
+                    chart.unit
+                )
+            },
+        );
+        self.text(56, 268, &summary, 22, p.text, 950);
+        self.text(
+            162,
+            521,
+            self.language.translate("Earlier"),
+            17,
+            p.muted,
+            480,
+        );
+        self.text(
+            865,
+            521,
+            self.language.translate("Latest"),
+            17,
+            p.muted,
+            960,
+        );
+        if chart.partial {
+            self.text(492, 521, "Incomplete readings", 17, p.muted, 730);
+        }
+    }
+
+    fn heating_details(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 150, "Heating and sensors", 30, p.text, 740);
+        self.button(
+            Rect(775, 115, 190, 47),
+            "Refresh",
+            p,
+            false,
+            Action::HeatingDetails,
+        );
+        if let Some(status) = view.status {
+            let boiler = if status.connection == "0" {
+                "Boiler offline"
+            } else {
+                "Boiler connected"
+            };
+            self.text(56, 197, boiler, 23, p.text, 475);
+            if status.connection != "0" {
+                let detail = format!(
+                    "{}°C · {}%",
+                    status.current_internal_boiler_setpoint, status.current_modulation_level
+                );
+                self.text(487, 197, &detail, 23, p.muted, 965);
+                if !matches!(status.ot_comm_error.as_str(), "" | "0") {
+                    self.text(740, 197, "OpenTherm error", 21, p.muted, 965);
+                }
+            }
+        }
+        self.text(56, 235, "Room sensor", 19, p.muted, 300);
+        let room = view.status.map(|status| status.current_temp.as_str());
+        self.text(285, 235, &temperature(room), 22, p.text, 473);
+        self.text(490, 235, "Humidity", 19, p.muted, 704);
+        let humidity =
+            crate::telemetry::display(crate::plugins::Metric::RoomHumidity, view.telemetry);
+        self.text(705, 235, &humidity, 22, p.text, 965);
+        let history = match view.history {
+            Some(Ok(history)) => history,
+            Some(Err(error)) => {
+                self.text(56, 294, error, 22, p.muted, 965);
+                return;
+            }
+            None => {
+                self.text(56, 294, "Loading heating history…", 22, p.muted, 965);
+                return;
+            }
+        };
+        self.text(56, 283, "Recent temperature history", 21, p.text, 650);
+        if let Some(diagnostics) = &history.diagnostics {
+            let offset = diagnostics
+                .calibration_offset_celsius
+                .map(|value| format!("{value:+.1}°C"))
+                .unwrap_or_else(|| "—".into());
+            let firmware = diagnostics.firmware_version.as_deref().unwrap_or("—");
+            let label = self.language.translate("Calibration offset");
+            self.text(
+                56,
+                528,
+                &format!("{label} {offset}  ·  Firmware {firmware}"),
+                16,
+                p.muted,
+                965,
+            );
+        }
+        if let Some(raw) = history.raw_room {
+            let label = self.language.translate("Last raw sensor");
+            self.text(651, 283, &format!("{label} {raw:.1}°C"), 17, p.muted, 960);
+        }
+        let all = || {
+            history
+                .room
+                .iter()
+                .chain(&history.target)
+                .copied()
+                .flatten()
+        };
+        let min = all().fold(f64::INFINITY, f64::min);
+        let max = all().fold(f64::NEG_INFINITY, f64::max);
+        if !min.is_finite() || !max.is_finite() {
+            self.text(56, 348, "No heating history", 22, p.muted, 965);
+            return;
+        }
+        let range = (max - min).max(1.0);
+        let (left, right, top, bottom) = (137, 963, 311, 489);
+        self.panel(Rect(left, top, right - left, 1), p.raised, 0);
+        self.panel(Rect(left, bottom, right - left, 1), p.raised, 0);
+        self.text(56, 323, &format!("{max:.0}°C"), 16, p.muted, 132);
+        self.text(56, 494, &format!("{min:.0}°C"), 16, p.muted, 132);
+        for (series, color) in [(&history.target, p.muted), (&history.room, p.accent)] {
+            let mut previous = None;
+            for (index, reading) in series.iter().enumerate() {
+                let point = reading.map(|value| {
+                    let x = left + index * (right - left) / (series.len() - 1).max(1);
+                    let y = bottom - ((value - min) / range * (bottom - top) as f64) as usize;
+                    (x, y)
+                });
+                if let (Some(from), Some(to)) = (previous, point) {
+                    self.segment(from, to, color);
+                }
+                previous = point;
+            }
+        }
+        self.text(142, 506, "Room temperature", 14, p.accent, 500);
+        self.text(574, 506, "Target temperature", 14, p.muted, 960);
+    }
+
+    fn segment(&mut self, from: (usize, usize), to: (usize, usize), color: u32) {
+        let (x, y) = (from.0 as isize, from.1 as isize);
+        let (dx, dy) = (to.0 as isize - x, to.1 as isize - y);
+        let steps = dx.abs().max(dy.abs()).max(1);
+        for i in 0..=steps {
+            let px = (x + dx * i / steps) as usize;
+            let py = (y + dy * i / steps) as usize;
+            self.pixels[py * WIDTH + px] = color;
+            self.pixels[(py + 1) * WIDTH + px] = color;
+        }
+    }
+
     fn store(&mut self, view: &View<'_>, p: &Palette) {
+        if let Some(entry) = self.repository.take() {
+            self.panel(Rect(32, 100, 960, 448), p.card, 26);
+            self.text(56, 148, "Add a GitHub catalog", 30, p.text, 960);
+            let label = if entry.text.is_empty() {
+                "owner/repository or owner/repository@commit"
+            } else {
+                &entry.text
+            };
+            self.text(56, 201, label, 24, p.muted, 965);
+            self.keyboard(entry.symbols, entry.shift, p);
+            self.button(
+                Rect(56, 473, 212, 52),
+                "Cancel",
+                p,
+                false,
+                Action::CloseRepository,
+            );
+            self.button(
+                Rect(752, 473, 215, 52),
+                "Add source",
+                p,
+                true,
+                Action::SyncRepository,
+            );
+            self.repository = Some(entry);
+            return;
+        }
         self.text(32, 130, "Dashboard widgets", 32, p.text, 992);
         for (row, plugin) in view.plugins.iter().skip(self.offset).take(4).enumerate() {
             let y = 150 + row * 88;
@@ -664,11 +1852,44 @@ impl Ui {
         if self.offset + 4 < view.plugins.len() {
             self.button(Rect(847, 509, 145, 49), "Next", p, false, Action::Next);
         }
+        self.button(
+            Rect(224, 509, 256, 49),
+            "Refresh official",
+            p,
+            false,
+            Action::RefreshOfficial,
+        );
+        self.button(
+            Rect(496, 509, 256, 49),
+            "Add GitHub source",
+            p,
+            false,
+            Action::RepositoryEntry,
+        );
+        if let Some(message) = view.catalog_message.filter(|_| view.error.is_none()) {
+            self.text(32, 581, message, 19, p.muted, 992);
+        }
     }
 
     fn settings(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 960, 400), p.card, 26);
         self.text(58, 153, "Appearance", 28, p.text, 966);
+        self.text(638, 153, "Language", 28, p.text, 966);
+        for (index, (label, language)) in [
+            ("English", crate::language::Language::English),
+            ("Nederlands", crate::language::Language::Dutch),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            self.button(
+                Rect(638 + index * 164, 173, 156, 60),
+                label,
+                p,
+                view.settings.language == language,
+                Action::Language(language),
+            );
+        }
         for (index, (label, mode)) in [
             ("Auto", Appearance::Auto),
             ("Day", Appearance::Day),
@@ -688,7 +1909,12 @@ impl Ui {
         self.text(
             58,
             266,
-            "Auto follows local time from 07:00 to 20:00.",
+            &format!(
+                "{} {:02}:00 – {:02}:00",
+                self.language.translate("Automatic day hours"),
+                view.settings.day_start,
+                view.settings.night_start
+            ),
             19,
             p.muted,
             966,
@@ -722,6 +1948,100 @@ impl Ui {
             Action::Stock,
         );
         self.button(Rect(380, 428, 214, 54), "Wi-Fi", p, false, Action::Network);
+        self.button(
+            Rect(612, 428, 225, 54),
+            "Display",
+            p,
+            false,
+            Action::Display,
+        );
+    }
+
+    fn display_settings(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 152, "Display", 30, p.text, 960);
+        for (night, x, brightness, hour) in [
+            (
+                false,
+                56,
+                view.settings.day_brightness,
+                view.settings.day_start,
+            ),
+            (
+                true,
+                524,
+                view.settings.night_brightness,
+                view.settings.night_start,
+            ),
+        ] {
+            self.text(
+                x,
+                203,
+                if night {
+                    "Night brightness"
+                } else {
+                    "Day brightness"
+                },
+                23,
+                p.muted,
+                x + 420,
+            );
+            self.button(
+                Rect(x, 218, 70, 51),
+                "−",
+                p,
+                false,
+                Action::Brightness(night, -5),
+            );
+            self.text(x + 102, 253, &format!("{brightness}%"), 27, p.text, x + 286);
+            self.button(
+                Rect(x + 310, 218, 70, 51),
+                "+",
+                p,
+                false,
+                Action::Brightness(night, 5),
+            );
+            self.text(
+                x,
+                319,
+                if night {
+                    "Night starts at"
+                } else {
+                    "Day starts at"
+                },
+                23,
+                p.muted,
+                x + 420,
+            );
+            self.button(
+                Rect(x, 336, 70, 51),
+                "−",
+                p,
+                false,
+                Action::AppearanceHour(night, -1),
+            );
+            self.text(x + 102, 371, &format!("{hour:02}:00"), 27, p.text, x + 286);
+            self.button(
+                Rect(x + 310, 336, 70, 51),
+                "+",
+                p,
+                false,
+                Action::AppearanceHour(night, 1),
+            );
+        }
+        self.text(56, 428, "Idle display after", 23, p.muted, 960);
+        for (index, (label, minutes)) in [("Never", 0), ("1 min", 1), ("5 min", 5), ("15 min", 15)]
+            .into_iter()
+            .enumerate()
+        {
+            self.button(
+                Rect(56 + index * 230, 449, 207, 55),
+                label,
+                p,
+                minutes == view.settings.idle_minutes,
+                Action::IdleMinutes(minutes),
+            );
+        }
     }
 }
 
@@ -734,8 +2054,17 @@ pub struct View<'a> {
     pub time: &'a str,
     pub hour: u8,
     pub root: &'a Path,
-    pub schedule: Option<&'a Result<Vec<ScheduleRow>, String>>,
+    pub schedule: Option<&'a Result<Vec<crate::schedule::Slot>, String>>,
+    pub presets: Option<&'a Result<Vec<crate::presets::Preset>, String>>,
     pub networks: Option<&'a Result<Vec<NetworkRow>, String>>,
+    pub network_message: Option<&'a str>,
+    pub catalog_message: Option<&'a str>,
+    pub readings: &'a HashMap<String, crate::feed::Reading>,
+    pub telemetry: &'a crate::telemetry::Readings,
+    pub energy: Option<&'a Result<crate::energy::Chart, String>>,
+    pub history: Option<&'a Result<crate::thermostat::History, String>>,
+    pub ambient: bool,
+    pub weather_results: Option<&'a Result<Vec<crate::plugins::Place>, String>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -744,13 +2073,25 @@ pub struct NetworkRow {
     pub name: String,
     #[serde(rename = "Signal", default)]
     pub signal: String,
+    #[serde(rename = "Enc", default)]
+    pub encryption: String,
+    #[serde(rename = "Auth", default)]
+    pub auth: String,
 }
 
-pub struct ScheduleRow {
-    pub day: usize,
-    pub start: String,
-    pub end: String,
-    pub preset: String,
+struct WifiForm {
+    join: crate::network::Join,
+    hidden: bool,
+    password_field: bool,
+    shift: bool,
+    symbols: bool,
+}
+
+#[derive(Default)]
+struct TextEntry {
+    text: String,
+    symbols: bool,
+    shift: bool,
 }
 
 fn temperature(value: Option<&str>) -> String {
@@ -761,6 +2102,14 @@ fn temperature(value: Option<&str>) -> String {
 
 fn plugin_value(plugin: &Plugin, view: &View<'_>) -> String {
     match plugin.source {
+        Source::BoxTalk => plugin.metric.map_or_else(
+            || "Unavailable".into(),
+            |metric| crate::telemetry::display(metric, view.telemetry),
+        ),
+        Source::HttpsJson => view
+            .readings
+            .get(&plugin.id)
+            .map_or_else(|| "Loading…".into(), |reading| reading.value.clone()),
         Source::Clock => view.time.into(),
         Source::Boiler => match view.status {
             Some(s) if s.connection == "0" => "Offline",

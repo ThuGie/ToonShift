@@ -4,7 +4,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub current_temp: String,
@@ -14,6 +14,85 @@ pub struct Status {
     pub connection: String,
     pub next_setpoint: String,
     pub next_time: String,
+    #[serde(default)]
+    pub current_internal_boiler_setpoint: String,
+    #[serde(default)]
+    pub current_modulation_level: String,
+    #[serde(default)]
+    pub ot_comm_error: String,
+}
+
+pub struct History {
+    pub room: Vec<Option<f64>>,
+    pub target: Vec<Option<f64>>,
+    pub raw_room: Option<f64>,
+    pub diagnostics: Option<Diagnostics>,
+}
+
+#[derive(serde::Serialize)]
+pub struct Diagnostics {
+    pub firmware_version: Option<String>,
+    pub calibration_offset_celsius: Option<f64>,
+    pub measured_centi_celsius: Option<i32>,
+    pub open_therm_configured: Option<bool>,
+    pub hot_water_enabled: Option<bool>,
+    pub hot_water_target_celsius: Option<i32>,
+}
+
+pub fn diagnostics() -> Result<Diagnostics, String> {
+    use crate::boxtalk::field;
+    let replies = crate::boxtalk::thermostat(&["GetTempOffset", "GetBoilerType", "GetDhwSettings"])
+        .map_err(|error| error.to_string())?;
+    let version = firmware_get("hcb_config", "action=getVersionInfo.json")
+        .ok()
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .and_then(|value| value["firmwareVersion"].as_str().map(str::to_owned));
+    let flag = |value| match value {
+        Some("0") => Some(false),
+        Some("1") => Some(true),
+        _ => None,
+    };
+    Ok(Diagnostics {
+        firmware_version: version,
+        calibration_offset_celsius: field(&replies[0], "offset")
+            .and_then(|v| v.parse().ok())
+            .filter(|v: &f64| v.is_finite()),
+        measured_centi_celsius: field(&replies[0], "measuredTemp").and_then(|v| v.parse().ok()),
+        open_therm_configured: flag(field(&replies[1], "ot")),
+        hot_water_enabled: flag(field(&replies[2], "dhwEnabled")),
+        hot_water_target_celsius: field(&replies[2], "dhwSetpoint").and_then(|v| v.parse().ok()),
+    })
+}
+
+pub fn history() -> Result<History, String> {
+    let response = firmware_get("happ_thermstat", "action=getHeatingHistory")?;
+    let parse = |name: &str| -> Result<Vec<Option<f64>>, String> {
+        let marker = format!("{name}:[");
+        let (_, body) = response
+            .split_once(&marker)
+            .ok_or("Missing temperature series")?;
+        let (series, _) = body
+            .split_once(']')
+            .ok_or("Incomplete temperature series")?;
+        Ok(series
+            .split(',')
+            .filter(|value| !value.trim().is_empty())
+            .take(1024)
+            .map(|value| {
+                value.trim().parse::<f64>().ok().filter(|value| {
+                    value.is_finite() && (0.0..=60.0).contains(value) && *value != 0.0
+                })
+            })
+            .collect())
+    };
+    Ok(History {
+        room: parse("roomTemps")?,
+        target: parse("setpoints")?,
+        raw_room: parse("uncorrectedRoomtemps")
+            .ok()
+            .and_then(|values| values.into_iter().flatten().last()),
+        diagnostics: diagnostics().ok(),
+    })
 }
 
 impl Status {
@@ -28,6 +107,11 @@ pub enum Command {
     Setpoint(i32),
     Program(bool),
     Schedule,
+    EditSchedule(crate::schedule::Edit),
+    EditScheduleAt(crate::schedule::Edit, u64),
+    Presets,
+    SavePreset(crate::presets::Preset),
+    ApplyPreset(u8),
 }
 
 pub struct Work {
@@ -51,18 +135,12 @@ impl Work {
     }
 }
 
-pub struct ScheduleSlot {
-    pub day: usize,
-    pub start: i64,
-    pub end: i64,
-    pub preset: String,
-}
-
 pub struct Update {
     pub status: Option<Status>,
     pub error: Option<String>,
     pub completed: bool,
-    pub schedule: Option<Result<Vec<ScheduleSlot>, String>>,
+    pub schedule: Option<Result<Vec<crate::schedule::Slot>, String>>,
+    pub presets: Option<Result<Vec<crate::presets::Preset>, String>>,
 }
 
 pub fn firmware_get(service: &str, query: &str) -> Result<String, String> {
@@ -77,7 +155,8 @@ pub fn firmware_get(service: &str, query: &str) -> Result<String, String> {
             "GET /{service}?{query} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
         )?;
         let mut response = String::new();
-        stream.take(32768).read_to_string(&mut response)?;
+        let limit = if service == "hcb_rrd" { 131072 } else { 32768 };
+        stream.take(limit).read_to_string(&mut response)?;
         Ok(response)
     }
     let response = send(service, query).map_err(|err| err.to_string())?;
@@ -102,38 +181,6 @@ fn request(query: &str) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
-fn schedule() -> Result<Vec<ScheduleSlot>, String> {
-    let body = firmware_get("happ_thermstat", "action=getWeeklyList")?;
-    let (_, rows) = body
-        .split_once("programs: [")
-        .ok_or("Unexpected weekly schedule response")?;
-    let (rows, _) = rows.rsplit_once(']').ok_or("Incomplete weekly schedule")?;
-    rows.split('{')
-        .skip(1)
-        .map(|row| {
-            let (row, _) = row.split_once('}').ok_or("Incomplete schedule entry")?;
-            let field = |key| {
-                row.split(',')
-                    .filter_map(|part| part.split_once(':'))
-                    .find(|(name, _)| name.trim() == key)
-                    .map(|(_, value)| value.trim().trim_matches('\''))
-                    .ok_or_else(|| format!("Missing schedule field {key}"))
-            };
-            let number = |key| field(key)?.parse::<i64>().map_err(|e| e.to_string());
-            let day = number("weekDay")?;
-            if !(0..7).contains(&day) {
-                return Err("Invalid schedule day".into());
-            }
-            Ok(ScheduleSlot {
-                day: day as usize,
-                start: number("startTimeT")?,
-                end: number("endTimeT")?,
-                preset: field("targetState")?.into(),
-            })
-        })
-        .collect()
-}
-
 pub fn status() -> Result<Status, String> {
     serde_json::from_value(request("action=getThermostatInfo")?).map_err(|err| err.to_string())
 }
@@ -152,7 +199,25 @@ fn apply(command: Command) -> Result<(), String> {
         Command::Program(enabled) => {
             format!("action=changeSchemeState&state={}", u8::from(enabled))
         }
-        Command::Schedule => return Ok(()),
+        Command::ApplyPreset(4) => "action=changeSchemeState&state=8&temperatureState=4".into(),
+        Command::ApplyPreset(preset) if preset < 4 => {
+            if status()?.program_state == "0" {
+                let temperature = crate::presets::load()?
+                    .into_iter()
+                    .find(|row| row.id == preset)
+                    .ok_or("Preset is unavailable")?
+                    .temperature;
+                format!("action=setSetpoint&Setpoint={temperature}")
+            } else {
+                format!("action=changeSchemeState&state=2&temperatureState={preset}")
+            }
+        }
+        Command::ApplyPreset(_) => return Err("Invalid preset".into()),
+        Command::Schedule
+        | Command::EditSchedule(_)
+        | Command::EditScheduleAt(_, _)
+        | Command::Presets
+        | Command::SavePreset(_) => return Ok(()),
     };
     request(&query)?;
     Ok(())
@@ -165,13 +230,38 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
         let mut work: Option<Work> = None;
         loop {
             let command = work.as_ref().map(|work| work.command);
-            let schedule = matches!(command, Some(Command::Schedule)).then(schedule);
-            let heat = command.filter(|command| !matches!(command, Command::Schedule));
+            let schedule = match command {
+                Some(Command::Schedule) => Some(crate::schedule::load()),
+                Some(Command::EditSchedule(edit)) => Some(crate::schedule::edit(edit, None)),
+                Some(Command::EditScheduleAt(edit, revision)) => {
+                    Some(crate::schedule::edit(edit, Some(revision)))
+                }
+                _ => None,
+            };
+            let presets = match command {
+                Some(Command::Presets) => Some(crate::presets::load()),
+                Some(Command::SavePreset(preset)) => Some(crate::presets::save(preset)),
+                _ => None,
+            };
+            let heat = command.filter(|command| {
+                !matches!(
+                    command,
+                    Command::Schedule
+                        | Command::EditSchedule(_)
+                        | Command::EditScheduleAt(_, _)
+                        | Command::Presets
+                        | Command::SavePreset(_)
+                )
+            });
             let result = heat.map(apply).transpose();
             let reply = work.take().and_then(|work| work.reply);
             let completed = heat.is_some() && reply.is_none();
             if let Some(reply) = reply {
-                let _ = reply.send(result.clone().map(|_| ()));
+                let response = match &schedule {
+                    Some(schedule) => schedule.as_ref().map(|_| ()).map_err(Clone::clone),
+                    None => result.clone().map(|_| ()),
+                };
+                let _ = reply.send(response);
             }
             let (status, error) = match status() {
                 Ok(value) => (Some(value), result.err()),
@@ -183,6 +273,7 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
                     error,
                     completed,
                     schedule,
+                    presets,
                 })
                 .is_err()
             {

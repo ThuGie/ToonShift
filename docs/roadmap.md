@@ -4,16 +4,16 @@ The target is a fast, local-first replacement for the entire Toon 2 touchscreen 
 
 | Area | Implemented | Work to reach parity |
 | --- | --- | --- |
-| Home | Room temperature, target, schedule toggle, widget pages, persistent tile order | Direct drag with page-edge scrolling, multiple tile sizes, named pages, weather and usage summaries, configurable shortcuts and screen saver |
-| Appearance | Three themes and automatic day/night colors | Per-mode brightness and contrast, idle dim and wake, configurable hours, ambient light option, touch calibration, localization and accessibility |
-| Thermostat | Setpoint, program toggle, weekly schedule viewer | Comfort/Home/Sleep/Away presets, temporary hold, vacation, weekly editor and copy day, heating history, calibration, frost behavior, sensor and adapter faults |
-| Boiler and HVAC | Basic burner widget | OpenTherm and on/off setup, adapter status, diagnostics, modulation, DHW, ventilation, heat recovery, zones and TRVs where present |
-| Electricity and gas | Store tiles with a local value contract | Meter discovery and wizard, P1 and wireless meter adapters, tariffs, gas and electricity graphs, consumption/export, solar, unit conversion, missing readings |
-| Connectivity | Wi-Fi scan and stock setup handoff | Join and forget networks, password entry, hidden SSIDs, DHCP/static IP, signal and diagnostics, time sync, recovery after a failed switch |
+| Home | Room temperature, target, schedule toggle, widget pages, persistent tile order, same-page drag and page swipe | Drag with page-edge scrolling, multiple tile sizes, named pages, configurable shortcuts |
+| Appearance | Three themes, automatic day/night colors and hours, English/Dutch selector, brightness and idle screen | Contrast, ambient light option, touch calibration, accessibility and full translation review |
+| Thermostat | Setpoint, program toggle, weekly editor, heating presets and history | Copy day, timed hold and vacation, calibration, frost behavior, and sensor fault diagnostics |
+| Boiler and HVAC | Burner widget, adapter connection, modulation and communication status | OpenTherm and on/off commissioning, full DHW controls, ventilation, heat recovery, zones and TRVs where present |
+| Electricity and gas | BoxTalk live tiles, firmware archive charts for power, gas, solar and water | Meter discovery and wizard, P1 and wireless meter adapters, tariffs, export and solar commissioning |
+| Connectivity | Wi-Fi scan, credential entry, firmware join and association check | Forget networks, static IP, time sync, and automatic recovery after a failed switch |
 | Accessories | Firmware API inventory | Z-Wave inclusion/exclusion, node health, smart plugs, Hue, smoke detectors, configuration and recovery |
 | Device | Build, SSH install, stock recovery | Setup wizard, locale, clock and timezone, offline/update status, settings export/import, logs, factory-reset workflow and signed update/rollback |
 | Services | Local-first UI | Identify weather, messages, service and cloud features that need supported equivalents. Document per-region availability and privacy choices |
-| Remote control | Bearer API over SSH | Android client, pairing, per-client permissions, token revocation, encrypted local HTTPS transport, read-only integrations and event streaming |
+| Remote control | Bearer API over SSH, including program, presets, and energy | Android client, pairing, per-client permissions, token revocation, encrypted local HTTPS transport, and event streaming |
 
 ## 1. Make the current UI measurable
 
@@ -33,7 +33,7 @@ Keep I/O away from the input and paint loop. Cache immutable glyphs and icons, c
 
 Use the current persistent tile ordering as the base. Add drag previews, edge paging, resize handles, page names, and a resettable layout. Keep a tap-based reordering path. Add widget-specific settings and consistent loading, unavailable, and stale-data states.
 
-Add an in-app source manager for the [official repository](https://github.com/ThuGie/ToonShift-plugins) and community sources. Show publisher and version, fetch catalogs with a maintained TLS implementation, and verify signed version metadata. Stage updates and keep the previous catalog if download or verification fails. Namespace IDs by publisher and migrate installed IDs. Include source removal, version pinning, and update history. Keep catalog parsing and widget configuration declarative. If a plugin eventually needs computation, define a narrowly scoped capability interface with resource limits.
+Build on the in-app GitHub catalog downloads for the [official repository](https://github.com/ThuGie/ToonShift-plugins) and community sources. Show publisher and version, verify signed version metadata, and keep the previous catalog if download or verification fails. Namespace IDs by publisher and migrate installed IDs. Include source removal and update history. Keep catalog parsing and widget configuration declarative. If a plugin eventually needs computation, define a narrowly scoped capability interface with resource limits.
 
 Prioritize independent integrations for common ToonStore use cases. Start with thermostat controls, P1 power and gas, solar, weather/radar, Home Assistant, and air-quality data. Follow with smart plugs, lighting, calendars, and notifications. Verify data sources, respect upstream licenses, and test device resource use for each addition.
 

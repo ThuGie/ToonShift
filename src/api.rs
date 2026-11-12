@@ -131,7 +131,8 @@ fn handle(
     }
     let mut body = vec![0; size.unwrap_or_default()];
     request.read_exact(&mut body)?;
-    match (method, path) {
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    match (method, route) {
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
             Err(_) => (
@@ -139,6 +140,66 @@ fn handle(
                 json!({"error":"Thermostat unavailable"}),
             ),
         }),
+        ("GET", "/v1/program") if query == "revision=1" => Ok(read_result(crate::schedule::load().map(|slots| {
+            json!({"revision":format!("{:016x}", crate::schedule::revision(&slots)), "periods":slots})
+        }))),
+        ("GET", "/v1/program") => Ok(read_result(crate::schedule::load())),
+        ("PUT", "/v1/program") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct ProgramEdit { revision: String, edit: crate::schedule::Edit }
+            let input = serde_json::from_slice::<ProgramEdit>(&body).ok().and_then(|input| {
+                (input.revision.len() == 16).then_some(())?;
+                Some((input.edit, u64::from_str_radix(&input.revision, 16).ok()?))
+            });
+            Ok(match input {
+                Some((edit, revision)) => submit(commands, Command::EditScheduleAt(edit, revision)),
+                None => ("422 Unprocessable Content", json!({"error":"Invalid schedule edit or revision"})),
+            })
+        }
+        ("GET", "/v1/presets") => Ok(read_result(crate::presets::load())),
+        ("GET", "/v1/diagnostics") => Ok(read_result(thermostat::diagnostics())),
+        ("GET", "/v1/energy") => {
+            let mut meter = None;
+            let mut period = None;
+            for part in query.split('&') {
+                let Some((key, value)) = part.split_once('=') else {
+                    return Ok(bad_request());
+                };
+                match key {
+                    "meter" if meter.is_none() => {
+                        meter = serde_json::from_value::<crate::energy::Meter>(json!(value)).ok()
+                    }
+                    "period" if period.is_none() => {
+                        period = serde_json::from_value::<crate::energy::Period>(json!(value)).ok()
+                    }
+                    _ => return Ok(bad_request()),
+                }
+            }
+            Ok(match (meter, period) {
+                (Some(meter), Some(period)) => read_result(crate::energy::load(meter, period)),
+                _ => bad_request(),
+            })
+        }
+        ("PUT", "/v1/preset") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Selection {
+                id: u8,
+            }
+            Ok(
+                match serde_json::from_slice::<Selection>(&body)
+                    .ok()
+                    .filter(|selection| selection.id < 5)
+                {
+                    Some(selection) => submit(commands, Command::ApplyPreset(selection.id)),
+                    None => (
+                        "422 Unprocessable Content",
+                        json!({"error":"id must be an integer from 0 to 4"}),
+                    ),
+                },
+            )
+        }
         ("PUT", "/v1/setpoint") => {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
@@ -174,6 +235,16 @@ fn handle(
     }
 }
 
+fn read_result<T: serde::Serialize>(result: Result<T, String>) -> (&'static str, Value) {
+    match result {
+        Ok(data) => ("200 OK", json!(data)),
+        Err(_) => (
+            "503 Service Unavailable",
+            json!({"error":"Firmware data unavailable"}),
+        ),
+    }
+}
+
 fn submit(commands: &Sender<Work>, command: Command) -> (&'static str, Value) {
     let (reply, result) = mpsc::channel();
     if commands.send(Work::from_api(command, reply)).is_err() {
@@ -184,6 +255,12 @@ fn submit(commands: &Sender<Work>, command: Command) -> (&'static str, Value) {
     }
     match result.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(())) => ("200 OK", json!({"result":"ok"})),
+        Ok(Err(error)) if error == "Schedule revision conflict" => {
+            ("409 Conflict", json!({"error":error}))
+        }
+        Ok(Err(error)) if matches!(command, Command::EditScheduleAt(_, _)) => {
+            ("422 Unprocessable Content", json!({"error":error}))
+        }
         Ok(Err(_)) => (
             "502 Bad Gateway",
             json!({"error":"Thermostat rejected the command"}),

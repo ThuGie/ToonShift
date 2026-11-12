@@ -24,7 +24,7 @@ try {
     $seen = @{}
     foreach ($plugin in $feed.plugins) {
         if ($plugin.id -cnotmatch '^[a-z0-9-]{1,40}$' -or $seen.ContainsKey($plugin.id) -or
-            $plugin.source -cnotin @('clock', 'boiler', 'next_target', 'note', 'file') -or
+            $plugin.source -cnotin @('clock', 'boiler', 'next_target', 'note', 'file', 'https_json', 'box_talk') -or
             [string]::IsNullOrWhiteSpace($plugin.title) -or $plugin.description -isnot [string]) {
             throw "Invalid or duplicate widget in $Repository"
         }

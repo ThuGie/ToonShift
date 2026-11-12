@@ -7,7 +7,9 @@ The Store reads built-in widgets and local JSON files in `/mnt/data/toon-rust/ca
 ./scripts/sync-plugin-repo.ps1 -Toon toon -Repository another-owner/another-catalog -Commit <full-commit-sha>
 ```
 
-The script downloads `catalog.json` over HTTPS on your computer, validates it, and transfers it over SSH. Open Store again to refresh the list. To stop using a source, remove its `owner--repository.json` over SSH. Remove any installed tiles in Store before removing the source if you want them removed from your dashboard too. A missing source displays its installed widgets as **Unavailable**.
+From the touchscreen, **Store → Refresh official** downloads the official catalog. **Add GitHub source** accepts `owner/repository` for its main branch or `owner/repository@<full-commit-sha>` for a pinned revision. ToonShift validates the download before replacing the cached manifest.
+
+The PowerShell script is also available to download and transfer a pinned catalog over SSH. To stop using a source, remove its `owner--repository.json` over SSH. Remove any installed tiles in Store before removing the source if you want them removed from your dashboard too. A missing source displays its installed widgets as **Unavailable**.
 
 ```json
 {
@@ -27,4 +29,6 @@ Use a globally unique lowercase ID with digits and hyphens, up to 40 characters.
 
 Each version 1 catalog has room for 64 entries within 32 KiB. The app reads up to 64 catalog files and 128 total widgets. Built-in IDs take precedence, followed by catalog filenames in sorted order. Use a publisher prefix to avoid collisions.
 
-The official starter pack contains electricity, gas, solar, humidity, and weather display widgets. A compatible collector must provide their data. Native data collectors and direct Store repository management are tracked in the [roadmap](roadmap.md).
+The official catalog publishes versioned plugins with a `release` field. The `https_json` weather source takes an Open-Meteo HTTPS URL template, JSON pointers for current and forecast values, condition labels, and named locations. ToonShift fetches it in the background with certificate verification. Tap the Weather tile for its forecast. Choose **Change location** for suggested cities or to search for a city or postcode.
+
+The `box_talk` source reads local firmware telemetry. Supported metrics are `room_humidity`, `room_temperature`, `electricity`, and `gas`. Electricity and gas require an active meter adapter. The solar tile can receive readings from an external `file` source, and the Energy screen uses the firmware's solar archive where present.

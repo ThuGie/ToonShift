@@ -118,7 +118,12 @@ impl Axis {
     }
 }
 
-pub fn touchscreen() -> io::Result<Receiver<io::Result<(usize, usize)>>> {
+pub struct Touch {
+    pub from: (usize, usize),
+    pub to: (usize, usize),
+}
+
+pub fn touchscreen() -> io::Result<Receiver<io::Result<Touch>>> {
     let mut file = File::open("/dev/input/event1")?;
     let (x, y, multi) = match (Axis::read(&file, 0), Axis::read(&file, 1)) {
         (Ok(x), Ok(y)) => (x, y, false),
@@ -132,6 +137,7 @@ pub fn touchscreen() -> io::Result<Receiver<io::Result<(usize, usize)>>> {
         let mut down = false;
         let mut pressed = false;
         let mut position = (None, None);
+        let mut start = None;
         let mut primary_slot = true;
         loop {
             if let Err(error) = file.read_exact(&mut event) {
@@ -147,6 +153,7 @@ pub fn touchscreen() -> io::Result<Receiver<io::Result<(usize, usize)>>> {
                     down = false;
                     pressed = false;
                     position = (None, None);
+                    start = None;
                 }
                 (1, 330, false) => pressed = value != 0,
                 (3, 47, true) => primary_slot = value == 0,
@@ -156,12 +163,16 @@ pub fn touchscreen() -> io::Result<Receiver<io::Result<(usize, usize)>>> {
                 (3, 53, true) if primary_slot => position.0 = Some(value),
                 (3, 54, true) if primary_slot => position.1 = Some(value),
                 (0, 0, _) => {
+                    let point = position
+                        .0
+                        .zip(position.1)
+                        .map(|(px, py)| (x.scale(px, WIDTH), y.scale(py, HEIGHT)));
+                    if pressed && start.is_none() {
+                        start = point;
+                    }
                     if down && !pressed {
-                        if let (Some(px), Some(py)) = position {
-                            if send
-                                .send(Ok((x.scale(px, WIDTH), y.scale(py, HEIGHT))))
-                                .is_err()
-                            {
+                        if let Some((from, to)) = start.take().zip(point) {
+                            if send.send(Ok(Touch { from, to })).is_err() {
                                 break;
                             }
                         }
@@ -177,6 +188,54 @@ pub fn touchscreen() -> io::Result<Receiver<io::Result<(usize, usize)>>> {
 
 pub fn time() -> (u8, String) {
     format_time(unsafe { libc::time(std::ptr::null_mut()) }.into())
+}
+
+pub struct Backlight {
+    maximum: u32,
+    original: u32,
+    current: u32,
+}
+
+impl Backlight {
+    const ROOT: &str = "/sys/class/backlight/mp3309-bl/";
+    pub fn open() -> io::Result<Self> {
+        let read = |name| -> io::Result<u32> {
+            fs::read_to_string(format!("{}{name}", Self::ROOT))?
+                .trim()
+                .parse::<u32>()
+                .map_err(io::Error::other)
+        };
+        let maximum = read("max_brightness")?;
+        let original = read("brightness")?;
+        if maximum == 0 {
+            return Err(io::Error::other("Invalid backlight range"));
+        }
+        Ok(Self {
+            maximum,
+            original,
+            current: original,
+        })
+    }
+
+    pub fn set(&mut self, percentage: u8) -> io::Result<()> {
+        let brightness = (self.maximum * u32::from(percentage.clamp(5, 100)) / 100).max(1);
+        if brightness != self.current {
+            fs::write(format!("{}brightness", Self::ROOT), brightness.to_string())?;
+            self.current = brightness;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Backlight {
+    fn drop(&mut self) {
+        if self.current != self.original {
+            let _ = fs::write(
+                format!("{}brightness", Self::ROOT),
+                self.original.to_string(),
+            );
+        }
+    }
 }
 
 pub fn format_time(seconds: i64) -> (u8, String) {

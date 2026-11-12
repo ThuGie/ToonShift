@@ -20,6 +20,13 @@ curl -H "Authorization: Bearer $TOONSHIFT_TOKEN" http://127.0.0.1:18082/v1/statu
 | `GET /v1/status` | — | `currentTemp`, `currentSetpoint`, `programState`, `burnerInfo`, `connection`, `nextSetpoint`, `nextTime` as strings |
 | `PUT /v1/setpoint` | `{"centi_celsius":2050}` | Sets the target to 20.50°C. Range is 600–3000 in hundredths of a degree Celsius |
 | `PUT /v1/schedule` | `{"enabled":true}` | Enables or disables the stored program |
+| `GET /v1/program` | — | Weekly periods with `start` and `end` as minute offsets from Sunday midnight and numeric `preset` |
+| `GET /v1/program?revision=1` | — | Returns the periods and their revision token |
+| `PUT /v1/program` | `{"revision":"0123456789abcdef","edit":{"operation":"copy_day","source":0,"days":62}}` | Applies a revision-checked edit. Weekday bits run from Sunday (1) to Saturday (64). A stale revision returns 409 |
+| `GET /v1/presets` | — | Preset ID, temperature in hundredths of °C, and hot-water setting |
+| `GET /v1/diagnostics` | — | Firmware version and BoxTalk temperature offset, measured temperature, and boiler/DHW configuration |
+| `PUT /v1/preset` | `{"id":1}` | Selects Comfort (0), Home (1), Sleep (2), Away (3), or Vacation (4) |
+| `GET /v1/energy?meter=electricity&period=day` | — | Time bounds, chart buckets, unit, recorded total, and a flag for incomplete readings |
 
 Success returns HTTP 200. Writes return `{"result":"ok"}` when the firmware acknowledges the command. Read status to confirm the effective state. Missing or invalid tokens get 401, unknown routes get 404, invalid input gets 422, firmware write failures get 502, service failures get 503, and a 504 means the write outcome is unknown.
 
@@ -45,6 +52,10 @@ The following inventory was gathered over SSH on a Toon 2 running firmware 6.4.5
 
 Program states 0, 1, and 2 represent manual, active schedule, and temporary override. Burner states 0–3 represent idle, room heating, hot water, and preheating. The reference device reported no boiler connection during testing. [Rooted Toon climate integration](https://github.com/cyberjunky/home-assistant-toon_climate)
 
+The editor reads the recurring program through `hcb_config?action=getObjectConfig&package=happ_thermstat&internalAddress=thermostatProgram`. Firmware 6.4.5 writes it through `setObjectConfig` with `packageName=happ_thermstat` and a URL-encoded XML `config` argument. Use a `Config` document containing only the target `device`, its UUID and program metadata, and its `schedule`. JSON writes can return `result: ok` without applying the edit. ToonShift reads the program back after each write.
+
+The stock interface subscribes to the BoxTalk `thermostatInfo` dataset for compensated room readings. ToonShift uses HTTP `currentTemp` for the dashboard and the same BoxTalk dataset for humidity. Its diagnostic `--probe-telemetry` prints both temperature sources. Verifying physical calibration requires a separate room thermometer. [FreeToon BoxTalk implementation](https://github.com/Ierlandfan/freetoon-lvgl/blob/main/lvgl_ui_recovered/src/boxtalk.c)
+
 ### Network, configuration, meters, and accessories
 
 | Service and actions | Evidence and behavior |
@@ -58,7 +69,7 @@ Program states 0, 1, and 2 represent manual, active schedule, and temporary over
 | `hcb_config` · `getObjectConfig.json`, `getObjectConfigTree.json` | Handler reports required UUID or package/internal-address identifiers |
 | `hcb_config` · `getPackageConfig.json`, `getPackageConfigTree.json` | Handler reports required package name |
 | `hcb_config` · `getBinaryVersionsList.json` | Found in binary strings. Timed out during the read probe |
-| `hcb_rrd` · `getRrdData` | Handler requires `rraName`. Data source, interval, aggregation, and time parameters need verification |
+| `hcb_rrd` · `getRrdData` | Verified with `loggerName`, `rra`, `from` and `to` Unix seconds, `nullForNaN=1`, and `samples`. Without `readableTime`, timestamp keys are Unix seconds. Flow uses `5min` archives. Verified electricity and gas counters in `5yrhours` and `10yrdays`. The reference Toon had no solar logger |
 | `happ_pwrusage` · `GetHistoricTariffs.json` | Handler responded that the historic tariff file could not be opened |
 | `hdrv_zwave` · `getDevices.json` | Verified inventory with connection and sensor fields. On the reference device, known electricity and gas devices reported `NaN` values |
 | `hdrv_zwave` · `getControllerInfo` | Verified controller metadata. Treat network identifiers as private |
@@ -69,5 +80,6 @@ The Z-Wave browser client under `/qmf/www/hdrv_zwave/js/` references reads such 
 
 - BoxTalk listens on `127.0.0.1:1337`. It uses XML messages with NUL framing for queries, commands, and subscriptions. Device-facing service names can be inspected in `/HCBv2/etc/start.d`. [FreeToon BoxTalk client](https://github.com/Ierlandfan/freetoon-lvgl/blob/main/lvgl_ui_recovered/src/boxtalk.c)
 - Display uses `/dev/fb0` with a 1024 × 600 visible area and two virtual pages. The active page offset can be read from `/sys/class/graphics/fb0/pan`. Touch events are on `/dev/input/event1`. Backlight controls are under `/sys/class/backlight/mp3309-bl`.
-- Wi-Fi has a firmware-managed WPA supplicant socket at `/run/wpa_supplicant/wlan0`. Firmware configuration and DHCP are managed separately. The present app uses the stock interface for credential changes.
+- Wi-Fi has a firmware-managed WPA supplicant socket at `/run/wpa_supplicant/wlan0`. ToonShift submits DHCP join settings through `SetWirelessNetworkInformation` and checks association and addressing. Existing DHCP settings can be restored if the new connection fails. Validate the join and rollback against a test SSID before deployment on another device.
+- OpenVPN owns the loopback management listener on port 8000. See the [parity matrix](parity-6.4.5.md) for verified BoxTalk actions and open gates.
 - For additional undocumented actions, inspect the stock web client, handler names in service binaries, and read-only requests. A symbol name alone is insufficient to identify an HTTP action.
