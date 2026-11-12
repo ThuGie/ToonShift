@@ -12,6 +12,7 @@ ToonShift is a native Rust touchscreen interface for the Eneco Toon 2. It draws 
 - Use **Energy** to browse electricity, gas, solar, and water archives across hourly, daily, weekly, monthly, and yearly ranges. Available charts depend on the connected meter and the samples it has saved.
 - Use **Settings → Wi-Fi** to scan for and join networks. WPA/WPA2 credentials go directly to the local firmware service.
 - Open **Schedule → Presets** to adjust the saved heating modes. Tap the Boiler tile for heating history and sensor information.
+- Open **Settings → Advanced setup** to choose OpenTherm or on/off relay, see boiler connection status, configure hot water when an OpenTherm boiler is connected, and manage registered Z-Wave devices. The Meters tab shows configured sources and has a shortcut to the stock meter installer.
 - Use the authenticated, loopback-only [ToonShift control API](docs/api.md) for integration over SSH.
 
 ## Build and install

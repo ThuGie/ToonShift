@@ -4,6 +4,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 pub fn thermostat(verbs: &[&str]) -> io::Result<Vec<String>> {
+    let actions: Vec<_> = verbs.iter().map(|verb| (*verb, "")).collect();
+    thermostat_actions(&actions)
+}
+
+pub fn thermostat_actions(actions: &[(&str, &str)]) -> io::Result<Vec<String>> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")?;
     let host = host.trim();
@@ -21,12 +26,12 @@ pub fn thermostat(verbs: &[&str]) -> io::Result<Vec<String>> {
     for state in ["connect", "alive"] {
         write!(socket, "<discovery nts=\"ssdp:{state}\" uuid=\"{uuid}\" type=\"urn:schemas-hcb-hae-com:device:toonshift\" version=\"v\" sessionKey=\"{id}\"></discovery>\0")?;
     }
-    for (index, verb) in verbs.iter().enumerate() {
-        write!(socket, "<action class=\"invoke\" uuid=\"{uuid}\" destuuid=\"{host}:happ_thermstat\" serviceid=\"urn:hcb-hae-com:serviceId:Thermostat\" requestid=\"{id}-{index}\"><u:{verb} xmlns:u=\"urn:hcb-hae-com:service:Thermostat:1\"></u:{verb}></action>\0")?;
+    for (index, (verb, arguments)) in actions.iter().enumerate() {
+        write!(socket, "<action class=\"invoke\" uuid=\"{uuid}\" destuuid=\"{host}:happ_thermstat\" serviceid=\"urn:hcb-hae-com:serviceId:Thermostat\" requestid=\"{id}-{index}\"><u:{verb} xmlns:u=\"urn:hcb-hae-com:service:Thermostat:1\">{arguments}</u:{verb}></action>\0")?;
     }
     let mut reader = BufReader::new(socket);
     let mut frame = Vec::new();
-    let mut replies = vec![None; verbs.len()];
+    let mut replies = vec![None; actions.len()];
     let deadline = Instant::now() + Duration::from_secs(3);
     while replies.iter().any(Option::is_none) {
         let remaining = deadline.saturating_duration_since(Instant::now());

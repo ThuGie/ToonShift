@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+mod hardware;
+pub use hardware::HardwareAction;
 
 pub const WIDTH: usize = 1024;
 pub const HEIGHT: usize = 600;
@@ -30,10 +32,12 @@ enum Page {
     Energy,
     HeatingDetails,
     Display,
+    Advanced,
 }
 
 #[derive(Clone, Copy)]
 pub enum Action {
+    Hardware(HardwareAction),
     Home,
     Schedule,
     ScheduleDay(usize),
@@ -128,6 +132,7 @@ fn palette(settings: &Settings, hour: u8) -> Palette {
 }
 
 pub struct Ui {
+    hardware: hardware::Controls,
     pub pixels: Vec<u32>,
     font: Font,
     glyphs: HashMap<(char, u16), (Metrics, Vec<u8>)>,
@@ -157,6 +162,7 @@ pub struct Ui {
 impl Ui {
     pub fn new() -> Self {
         Self {
+            hardware: Default::default(),
             pixels: vec![0; WIDTH * HEIGHT],
             font: Font::from_bytes(
                 include_bytes!("../assets/Inter.ttf") as &[u8],
@@ -693,6 +699,7 @@ impl Ui {
         ] {
             let selected = self.page == page
                 || (page == Page::Settings && self.page == Page::Network)
+                || (page == Page::Settings && self.page == Page::Advanced)
                 || (page == Page::Schedule && self.page == Page::Presets);
             self.button(Rect(x, 18, width, 54), title, &p, selected, action);
         }
@@ -708,6 +715,7 @@ impl Ui {
             Page::Energy => self.energy(view, &p),
             Page::HeatingDetails => self.heating_details(view, &p),
             Page::Display => self.display_settings(view, &p),
+            Page::Advanced => self.hardware_screen(view, &p),
         }
         if let Some(error) = view.error {
             self.text(32, 581, error, 19, p.text, 992);
@@ -1955,6 +1963,13 @@ impl Ui {
             false,
             Action::Display,
         );
+        self.button(
+            Rect(640, 347, 324, 60),
+            "Advanced setup",
+            p,
+            true,
+            Action::Hardware(HardwareAction::Open),
+        );
     }
 
     fn display_settings(&mut self, view: &View<'_>, p: &Palette) {
@@ -2046,6 +2061,7 @@ impl Ui {
 }
 
 pub struct View<'a> {
+    pub hardware: Option<&'a crate::advanced::State>,
     pub settings: &'a Settings,
     pub plugins: &'a [Plugin],
     pub status: Option<&'a Status>,

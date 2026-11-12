@@ -8,12 +8,12 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | --- | --- | --- |
 | airQuality | Thermostat humidity and `hdrv_sensory` | Compensated humidity read verified. CO₂, VOC, thresholds, and sensor fault behavior remain. |
 | benchmark | Local display and touch | Compare stock and ToonShift touch latency, cold start, and idle CPU. |
-| boilerMonitor | Thermostat, BoilerInfo, boiler adapter | Configured boiler type read verified. Commissioning needs an active adapter. |
+| boilerMonitor | Thermostat, BoilerInfo, boiler adapter | Advanced setup exposes OpenTherm and on/off relay with confirmation and read-back. Reference unit still reports an offline link. Live boiler operation remains unverified. |
 | clock | RTC and firmware time service | Home clock and idle clock implemented. Timezone, time sync, and manual clock settings remain. |
 | controlPanel | Tenant registration | Map visible stock controls and their firmware contracts. |
 | customerService | Tenant and legacy services | Map visible support actions. Add local support and redacted diagnostics export. |
 | domesticHotWater | Thermostat DHW BoxTalk actions | Enabled flag, target, and range read verified. Controls need a DHW-capable appliance. |
-| eMetersSettings | P1, Z-Wave, power usage services | Counter archives verified. Pairing, source switching, and tariffs remain. |
+| eMetersSettings | P1, Z-Wave, power usage services | Counter archives and meter inventory verified. Z-Wave setup starts from Advanced. Wired meter commissioning uses stock setup. |
 | fiona | Tenant-specific registration | Identify visible role before selecting a local equivalent. |
 | graph | `hcb_rrd` | Electricity and gas daily charts returned readings on the reference unit. Validate live units and timestamps with an active meter. |
 | heatRecovery | `happ_hvac`, configured VHR | Reference unit reported no VHR. Verify on a configured unit. |
@@ -42,6 +42,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 - The BoxTalk thermostat action namespace is `urn:hcb-hae-com:serviceId:Thermostat`. `GetTempOffset` returns `offset` in °C and `measuredTemp` in hundredths of °C. `GetBoilerType` returns `ot`. `GetDhwSettings` returns the enabled flag, target, and limits. `GetHolidays` returned an empty list. The `SetHoliday` handler takes `entryId`, `startTimeT`, `endTimeT`, and `setpoint`. Vacation writes need verification before exposing them.
 - `hcb_config` exposes the saved wireless interface under `iface-wlan0`. Its payload can contain credentials. Keep the payload out of logs and public fixtures.
 - A configured boiler type does not prove that an appliance is connected. The reference unit reported its boiler offline.
+- Advanced setup detected one registered Z-Wave meter and one configured meter source. Touchscreen inclusion started and the controller returned cancellation and stop acknowledgements. No physical device was added or removed during that test.
 
 ## Candidate checks on the reference Toon
 

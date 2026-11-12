@@ -1,3 +1,4 @@
+mod advanced;
 mod boxtalk;
 mod download;
 mod energy;
@@ -64,6 +65,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         ot_comm_error: "0".into(),
     };
     let view = ui::View {
+        hardware: None,
         settings: &settings,
         plugins: &plugins,
         status: Some(&status),
@@ -126,6 +128,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(1).as_deref() == Some("--probe") {
         println!("{:?}", thermostat::status()?);
         println!("Framebuffer and touchscreen opened");
+        return Ok(());
+    }
+    if std::env::args().nth(1).as_deref() == Some("--probe-hardware") {
+        let boiler = advanced::boiler()?;
+        let devices = advanced::devices()?;
+        println!(
+            "Boiler mode: {}; link: {}; hot-water configuration: {}",
+            if boiler.open_therm {
+                "OpenTherm"
+            } else {
+                "on/off relay"
+            },
+            if boiler.connected {
+                "connected"
+            } else {
+                "offline"
+            },
+            boiler.hot_water.is_some()
+        );
+        println!(
+            "Registered Z-Wave nodes: {}; meter nodes: {}; configured meter sources: {}",
+            devices.nodes.len(),
+            devices.nodes.iter().filter(|node| node.meter).count(),
+            devices.p1_sources
+        );
         return Ok(());
     }
     if std::env::args().nth(1).as_deref() == Some("--probe-telemetry") {
@@ -224,7 +251,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut ui = ui::Ui::new();
     let mut clock = device::time();
     let mut feed_poll = std::time::Instant::now();
+    let mut hardware = advanced::State::new();
     loop {
+        dirty |= hardware.update();
         if let Ok(result) = weather_receiver.try_recv() {
             weather_busy = false;
             weather_results = Some(result);
@@ -328,6 +357,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ui.draw(&ui::View {
+                hardware: Some(&hardware),
                 settings: &settings,
                 plugins: &catalog,
                 status: status.as_ref(),
@@ -367,6 +397,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut next = settings.clone();
         let mut persist = true;
         match ui.gesture(gesture.from, gesture.to, settings.installed.len()) {
+            Some(Action::Hardware(action)) => {
+                ui.hardware_action(&mut hardware, action);
+                persist = false;
+            }
             Some(Action::Heat(command)) => {
                 commands
                     .send(thermostat::Work::from_ui(command))

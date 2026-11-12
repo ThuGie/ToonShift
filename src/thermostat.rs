@@ -144,8 +144,16 @@ pub struct Update {
 }
 
 pub fn firmware_get(service: &str, query: &str) -> Result<String, String> {
-    fn send(service: &str, query: &str) -> std::io::Result<String> {
-        let timeout = Duration::from_secs(if service == "hcb_netcon" { 6 } else { 2 });
+    let timeout = Duration::from_secs(if service == "hcb_netcon" { 6 } else { 2 });
+    firmware_get_timeout(service, query, timeout)
+}
+
+pub fn firmware_get_timeout(
+    service: &str,
+    query: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    fn send(service: &str, query: &str, timeout: Duration) -> std::io::Result<String> {
         let address = SocketAddr::from(([127, 0, 0, 1], 10080));
         let mut stream = TcpStream::connect_timeout(&address, timeout)?;
         stream.set_read_timeout(Some(timeout))?;
@@ -155,11 +163,15 @@ pub fn firmware_get(service: &str, query: &str) -> Result<String, String> {
             "GET /{service}?{query} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
         )?;
         let mut response = String::new();
-        let limit = if service == "hcb_rrd" { 131072 } else { 32768 };
+        let limit = if matches!(service, "hcb_rrd" | "hdrv_zwave") {
+            131072
+        } else {
+            32768
+        };
         stream.take(limit).read_to_string(&mut response)?;
         Ok(response)
     }
-    let response = send(service, query).map_err(|err| err.to_string())?;
+    let response = send(service, query, timeout).map_err(|err| err.to_string())?;
     let (headers, body) = response
         .split_once("\r\n\r\n")
         .ok_or("Incomplete HTTP response")?;

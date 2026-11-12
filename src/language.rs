@@ -20,6 +20,55 @@ impl Language {
             "Store" => "Winkel",
             "Settings" => "Instellingen",
             "Language" => "Taal",
+            "Advanced setup" => "Geavanceerd instellen",
+            "Meters" => "Meters",
+            "Boiler link offline" => "Ketelverbinding offline",
+            "Communication protocol" => "Communicatieprotocol",
+            "On/off relay" => "Aan/uit-relais",
+            "Change boiler protocol" => "Ketelprotocol wijzigen",
+            "Apply protocol" => "Protocol toepassen",
+            "Use OpenTherm for this boiler?" => "OpenTherm gebruiken voor deze ketel?",
+            "Use the on/off relay for this boiler?" => "Aan/uit-relais gebruiken voor deze ketel?",
+            "Choose the protocol specified for your boiler and adapter." => {
+                "Kies het protocol van je ketel en adapter."
+            }
+            "Domestic hot water" => "Warm tapwater",
+            "Saved hot-water target" => "Opgeslagen tapwatertemperatuur",
+            "Stock meter installer" => "Originele meterinstallatie",
+            "Hot-water controls require a connected OpenTherm boiler." => {
+                "Tapwaterinstellingen vereisen een verbonden OpenTherm-ketel."
+            }
+            "Reading boiler settings…" => "Ketelinstellingen laden…",
+            "Reading device inventory…" => "Apparaten laden…",
+            "configured meter sources" => "ingestelde meterbronnen",
+            "Registered" => "Geregistreerd",
+            "No matching devices" => "Geen passende apparaten",
+            "Add Z-Wave device" => "Z-Wave-apparaat toevoegen",
+            "Remove Z-Wave device" => "Z-Wave-apparaat verwijderen",
+            "Start, then press the setup button on the device." => {
+                "Start en druk op de instelknop van het apparaat."
+            }
+            "Start setup" => "Instellen starten",
+            "Cancel setup" => "Instellen annuleren",
+            "Z-Wave setup" => "Z-Wave instellen",
+            "Choose which security keys to grant." => {
+                "Kies welke beveiligingssleutels je toestaat."
+            }
+            "Controller PIN mode" => "Controller-pincode",
+            "Enter device PIN digits" => "Voer pincodecijfers in",
+            "Enter the controller PIN on the Z-Wave device." => {
+                "Voer de controller-pincode in op het Z-Wave-apparaat."
+            }
+            "Waiting for the controller. Press the setup button on the device." => {
+                "Wachten op de controller. Druk op de instelknop van het apparaat."
+            }
+            "Save name" => "Naam opslaan",
+            "Rename" => "Naam wijzigen",
+            "Switch on" => "Inschakelen",
+            "Switch off" => "Uitschakelen",
+            "Back" => "Terug",
+            "Continue" => "Doorgaan",
+            "Working…" => "Bezig…",
             "Display" => "Scherm",
             "Tap to wake" => "Tik om te activeren",
             "Day brightness" => "Helderheid overdag",
