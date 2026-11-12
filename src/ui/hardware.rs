@@ -507,14 +507,24 @@ impl Ui {
                 self.button(
                     Rect(294, 477, 310, 50),
                     if self.stock_confirm {
-                        "Confirm switch to stock"
+                        "Open stock for 10 min"
                     } else {
                         "Stock meter installer"
                     },
                     p,
                     false,
-                    Action::Stock,
+                    Action::StockMeterSession,
                 );
+                if self.stock_confirm {
+                    self.text(
+                        56,
+                        453,
+                        "To return sooner, tap the top-left corner five times.",
+                        18,
+                        p.muted,
+                        960,
+                    );
+                }
             } else {
                 self.hardware_button(
                     Rect(294, 477, 238, 50),

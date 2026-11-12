@@ -83,10 +83,11 @@ pub enum Action {
     OpenPlugin(usize),
     PluginSettings,
     PluginPlace(usize, usize),
-    WeatherSearch,
-    RunWeatherSearch,
-    CloseWeatherSearch,
-    UseWeatherPlace(usize, usize),
+    LocationSearch,
+    RunLocationSearch(usize),
+    CloseLocationSearch,
+    UseLocationResult(usize, usize),
+    UpdatePlugin(usize),
     DashboardPage(usize),
     EditTiles,
     Tile(usize),
@@ -98,6 +99,7 @@ pub enum Action {
     Appearance(Appearance),
     Heat(Command),
     Stock,
+    StockMeterSession,
 }
 
 struct Palette {
@@ -148,7 +150,7 @@ pub struct Ui {
     plugin_settings: bool,
     wifi: Option<WifiForm>,
     repository: Option<TextEntry>,
-    weather_search: bool,
+    location_search: bool,
     preset_editor: Option<crate::presets::Preset>,
     energy: (crate::energy::Meter, crate::energy::Period),
     language: crate::language::Language,
@@ -182,7 +184,7 @@ impl Ui {
             plugin_settings: false,
             wifi: None,
             repository: None,
-            weather_search: false,
+            location_search: false,
             preset_editor: None,
             energy: (
                 crate::energy::Meter::Electricity,
@@ -345,7 +347,7 @@ impl Ui {
         self.panel(rect, background, 14);
         let label = if matches!(
             action,
-            Action::PluginPlace(_, _) | Action::UseWeatherPlace(_, _) | Action::Key(_)
+            Action::PluginPlace(_, _) | Action::UseLocationResult(_, _) | Action::Key(_)
         ) {
             label
         } else {
@@ -389,17 +391,17 @@ impl Ui {
             self.repository = None;
         }
         match action {
-            Action::WeatherSearch => {
-                self.weather_search = true;
+            Action::LocationSearch => {
+                self.location_search = true;
                 self.repository = Some(TextEntry::default());
                 return Some(action);
             }
-            Action::CloseWeatherSearch => {
-                self.weather_search = false;
+            Action::CloseLocationSearch => {
+                self.location_search = false;
                 self.repository = None;
             }
-            Action::UseWeatherPlace(_, _) => {
-                self.weather_search = false;
+            Action::UseLocationResult(_, _) => {
+                self.location_search = false;
                 self.repository = None;
                 self.plugin_settings = false;
                 return Some(action);
@@ -497,7 +499,7 @@ impl Ui {
                 self.page = Page::Plugin;
                 self.open_plugin = index;
                 self.plugin_settings = false;
-                self.weather_search = false;
+                self.location_search = false;
             }
             Action::PluginSettings => self.plugin_settings = !self.plugin_settings,
             Action::OpenSlot(slot) => self.editing_slot = Some((Some(slot), slot)),
@@ -561,7 +563,7 @@ impl Ui {
             },
             Action::Previous => self.offset = self.offset.saturating_sub(4),
             Action::Next => self.offset += 4,
-            Action::Stock if !self.stock_confirm => {
+            Action::Stock | Action::StockMeterSession if !self.stock_confirm => {
                 self.stock_confirm = true;
                 return None;
             }
@@ -729,16 +731,16 @@ impl Ui {
         let Some(feed) = &plugin.feed else {
             return;
         };
-        if self.weather_search {
-            self.weather_search_view(view, p);
+        if self.location_search {
+            self.location_search_view(view, p);
             return;
         }
         self.panel(Rect(32, 100, 960, 448), p.card, 26);
-        self.text(56, 148, &plugin.title, 32, p.text, 600);
+        self.raw_text(56, 148, plugin.title(self.language), 32, p.text, 600);
         self.button(
             Rect(757, 117, 209, 47),
             if self.plugin_settings {
-                "Back to forecast"
+                "Back to readings"
             } else {
                 "Change location"
             },
@@ -765,10 +767,10 @@ impl Ui {
                     p.text,
                     965,
                 );
-                for (i, day) in reading.forecast.iter().enumerate() {
+                for (i, day) in reading.rows.iter().enumerate() {
                     let y = 305 + i * 46;
                     self.text(56, y, &day.date, 21, p.muted, 320);
-                    self.text(335, y, &day.temperatures, 21, p.text, 600);
+                    self.text(335, y, &day.range, 21, p.text, 600);
                     self.text(631, y, &day.condition, 21, p.muted, 960);
                 }
             } else {
@@ -777,13 +779,15 @@ impl Ui {
             return;
         }
         self.text(56, 198, "Location", 23, p.muted, 960);
-        self.button(
-            Rect(755, 168, 211, 45),
-            "Search location",
-            p,
-            false,
-            Action::WeatherSearch,
-        );
+        if feed.search.is_some() {
+            self.button(
+                Rect(755, 168, 211, 45),
+                "Search location",
+                p,
+                false,
+                Action::LocationSearch,
+            );
+        }
         for (index, place) in feed.places.iter().enumerate() {
             self.button(
                 Rect(56 + index % 4 * 229, 218 + index / 4 * 46, 214, 42),
@@ -803,7 +807,7 @@ impl Ui {
         );
     }
 
-    fn weather_search_view(&mut self, view: &View<'_>, p: &Palette) {
+    fn location_search_view(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 960, 448), p.card, 26);
         self.text(56, 148, "Search location", 30, p.text, 960);
         if let Some(entry) = self.repository.take() {
@@ -819,10 +823,10 @@ impl Ui {
                 "Search",
                 p,
                 true,
-                Action::RunWeatherSearch,
+                Action::RunLocationSearch(self.open_plugin),
             );
         } else {
-            match view.weather_results {
+            match view.location_results {
                 Some(Ok(results)) if !results.is_empty() => {
                     for (index, place) in results.iter().enumerate() {
                         self.button(
@@ -830,7 +834,7 @@ impl Ui {
                             &place.name,
                             p,
                             false,
-                            Action::UseWeatherPlace(self.open_plugin, index),
+                            Action::UseLocationResult(self.open_plugin, index),
                         );
                     }
                 }
@@ -838,13 +842,13 @@ impl Ui {
                 Some(Err(error)) => self.text(56, 264, error, 23, p.muted, 960),
                 None => self.text(56, 264, "Searching…", 23, p.muted, 960),
             }
-            if view.weather_results.is_some() {
+            if view.location_results.is_some() {
                 self.button(
                     Rect(752, 473, 215, 52),
                     "Search again",
                     p,
                     false,
-                    Action::WeatherSearch,
+                    Action::LocationSearch,
                 );
             }
         }
@@ -853,7 +857,7 @@ impl Ui {
             "Cancel",
             p,
             false,
-            Action::CloseWeatherSearch,
+            Action::CloseLocationSearch,
         );
     }
 
@@ -1486,7 +1490,14 @@ impl Ui {
                 .enumerate()
                 .find(|(_, plugin)| &plugin.id == id)
             {
-                self.text(x + 16, y + 47, &plugin.title, 21, muted, x + 182);
+                self.raw_text(
+                    x + 16,
+                    y + 47,
+                    plugin.title(self.language),
+                    21,
+                    muted,
+                    x + 182,
+                );
                 self.text(
                     x + 16,
                     y + 113,
@@ -1836,10 +1847,22 @@ impl Ui {
         for (row, plugin) in view.plugins.iter().skip(self.offset).take(4).enumerate() {
             let y = 150 + row * 88;
             self.panel(Rect(32, y, 960, 80), p.card, 16);
-            self.text(54, y + 33, &plugin.title, 23, p.text, 738);
+            self.raw_text(54, y + 33, plugin.title(self.language), 23, p.text, 595);
             self.text(54, y + 61, &plugin.description, 18, p.muted, 738);
             let index = self.offset + row;
             let installed = view.settings.installed.contains(&plugin.id);
+            if installed
+                && plugin.artifact.is_some()
+                && plugin.installed_release.as_deref() != Some(&plugin.release)
+            {
+                self.button(
+                    Rect(608, y + 11, 150, 58),
+                    "Update",
+                    p,
+                    true,
+                    Action::UpdatePlugin(index),
+                );
+            }
             self.button(
                 Rect(770, y + 11, 202, 58),
                 if installed { "Remove" } else { "Install" },
@@ -2080,7 +2103,7 @@ pub struct View<'a> {
     pub energy: Option<&'a Result<crate::energy::Chart, String>>,
     pub history: Option<&'a Result<crate::thermostat::History, String>>,
     pub ambient: bool,
-    pub weather_results: Option<&'a Result<Vec<crate::plugins::Place>, String>>,
+    pub location_results: Option<&'a Result<Vec<crate::plugins::Place>, String>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2122,7 +2145,7 @@ fn plugin_value(plugin: &Plugin, view: &View<'_>) -> String {
             || "Unavailable".into(),
             |metric| crate::telemetry::display(metric, view.telemetry),
         ),
-        Source::HttpsJson => view
+        Source::HttpsJson | Source::MeterArchive => view
             .readings
             .get(&plugin.id)
             .map_or_else(|| "Loading…".into(), |reading| reading.value.clone()),

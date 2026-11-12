@@ -14,6 +14,7 @@ pub enum Source {
     File,
     HttpsJson,
     BoxTalk,
+    MeterArchive,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub enum Metric {
 pub struct Plugin {
     pub id: String,
     pub title: String,
+    pub title_nl: Option<String>,
     pub description: String,
     pub source: Source,
     #[serde(default)]
@@ -37,6 +39,78 @@ pub struct Plugin {
     pub release: String,
     pub feed: Option<Feed>,
     pub metric: Option<Metric>,
+    pub meter: Option<crate::energy::Meter>,
+    pub artifact: Option<Artifact>,
+    #[serde(skip)]
+    pub installed_release: Option<String>,
+}
+
+impl Plugin {
+    pub fn title(&self, language: crate::language::Language) -> &str {
+        if language == crate::language::Language::Dutch {
+            return self
+                .title_nl
+                .as_deref()
+                .unwrap_or_else(|| language.translate(&self.title));
+        }
+        &self.title
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct Artifact {
+    path: String,
+    sha256: String,
+    #[serde(skip)]
+    origin: Option<String>,
+}
+
+impl Artifact {
+    fn valid(&self) -> bool {
+        self.path.starts_with("plugins/")
+            && self.path.ends_with(".json")
+            && self.path.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment != "."
+                    && segment != ".."
+                    && segment
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            })
+            && self.sha256.len() == 64
+            && self.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    fn package_file(&self, root: &Path, id: &str) -> Option<std::path::PathBuf> {
+        let origin = self
+            .origin
+            .as_deref()?
+            .strip_prefix("https://raw.githubusercontent.com/")?;
+        let mut parts = origin.split('/');
+        let (owner, repository, revision) = (parts.next()?, parts.next()?, parts.next()?);
+        let name = |value: &str| {
+            !value.is_empty()
+                && value != "."
+                && value != ".."
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        };
+        if !name(owner)
+            || owner.contains("--")
+            || !name(repository)
+            || !name(revision)
+            || parts.next() != Some("")
+            || parts.next().is_some()
+        {
+            return None;
+        }
+        Some(root.join("packages").join(format!(
+            "{}--{}--{id}.json",
+            owner.to_ascii_lowercase(),
+            repository.to_ascii_lowercase()
+        )))
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -48,16 +122,37 @@ pub struct Feed {
     pub condition: String,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
-    pub forecast: Option<Forecast>,
+    #[serde(default)]
+    pub labels_nl: std::collections::HashMap<String, String>,
+    #[serde(default = "default_decimals")]
+    pub decimals: usize,
+    #[serde(alias = "forecast")]
+    pub series: Option<RangeSeries>,
     pub places: Vec<Place>,
+    pub search: Option<LocationSearch>,
 }
 
 #[derive(Clone, Deserialize)]
-pub struct Forecast {
+pub struct LocationSearch {
+    pub url: String,
+    pub results: String,
+    pub name: String,
+    pub latitude: String,
+    pub longitude: String,
+    #[serde(default)]
+    pub region: Vec<String>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct RangeSeries {
     pub dates: String,
     pub min: String,
     pub max: String,
     pub codes: String,
+}
+
+fn default_decimals() -> usize {
+    1
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -78,6 +173,7 @@ const BUILTINS: &str = r#"[
 struct Repository {
     version: u8,
     plugins: Vec<Plugin>,
+    origin: Option<String>,
 }
 
 pub const OFFICIAL: &str = "ThuGie/ToonShift-plugins";
@@ -127,9 +223,18 @@ pub fn sync(root: &Path, input: &str) -> Result<usize, String> {
     );
     let temporary = dir.join(format!(".{file}.{}.tmp", std::process::id()));
     let destination = dir.join(format!("{file}.json"));
+    let mut cached: serde_json::Value =
+        serde_json::from_slice(&response).map_err(|_| "Invalid catalog manifest")?;
+    cached["origin"] = serde_json::json!(format!(
+        "https://raw.githubusercontent.com/{owner}/{name}/{revision}/"
+    ));
+    let cached = serde_json::to_vec(&cached).map_err(|err| err.to_string())?;
+    if cached.len() > 32768 {
+        return Err("Catalog exceeds 32 KiB".into());
+    }
     let result = (|| -> io::Result<()> {
         let mut handle = File::create(&temporary)?;
-        handle.write_all(&response)?;
+        handle.write_all(&cached)?;
         handle.sync_all()?;
         fs::rename(&temporary, destination)?;
         Ok(())
@@ -141,6 +246,48 @@ pub fn sync(root: &Path, input: &str) -> Result<usize, String> {
     Ok(repository.plugins.len())
 }
 
+pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let artifact = plugin
+        .artifact
+        .as_ref()
+        .ok_or("Plugin has no downloadable package")?;
+    let origin = artifact
+        .origin
+        .as_ref()
+        .ok_or("Refresh the catalog before installing this plugin")?;
+    let path = artifact
+        .package_file(root, &plugin.id)
+        .ok_or("Invalid plugin package origin")?;
+    if !artifact.valid() {
+        return Err("Invalid plugin package origin".into());
+    }
+    let response = crate::download::get(
+        &root.join("https-roots.pem"),
+        &format!("{origin}{}", artifact.path),
+    )?;
+    if !format!("{:x}", Sha256::digest(&response)).eq_ignore_ascii_case(&artifact.sha256) {
+        return Err("Plugin package checksum does not match the catalog".into());
+    }
+    let package: Plugin =
+        serde_json::from_slice(&response).map_err(|_| "Invalid plugin package")?;
+    if !valid_plugin(&package)
+        || package.artifact.is_some()
+        || package.id != plugin.id
+        || package.release != plugin.release
+    {
+        return Err("Plugin package does not match the catalog entry".into());
+    }
+    let dir = root.join("packages");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let temporary = path.with_extension("tmp");
+    let mut file = File::create(&temporary).map_err(|err| err.to_string())?;
+    file.write_all(&response)
+        .and_then(|_| file.sync_all())
+        .map_err(|err| err.to_string())?;
+    fs::rename(temporary, path).map_err(|err| err.to_string())
+}
+
 fn valid_plugin(plugin: &Plugin) -> bool {
     !plugin.id.is_empty()
         && plugin.id.len() <= 40
@@ -150,20 +297,28 @@ fn valid_plugin(plugin: &Plugin) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         && !plugin.title.trim().is_empty()
         && plugin.title.len() <= 96
+        && plugin
+            .title_nl
+            .as_ref()
+            .is_none_or(|title| !title.trim().is_empty() && title.len() <= 96)
         && plugin.description.len() <= 256
         && plugin.text.len() <= 1024
-        && (!matches!(plugin.source, Source::BoxTalk) || plugin.metric.is_some())
-        && (!matches!(plugin.source, Source::HttpsJson)
-            || plugin.feed.as_ref().is_some_and(|feed| {
-                (1..=24).contains(&feed.places.len())
-                    && feed.url.len() <= 1024
-                    && feed.places.iter().all(|place| {
-                        !place.name.is_empty()
-                            && place.name.len() <= 80
-                            && (-90.0..=90.0).contains(&place.latitude)
-                            && (-180.0..=180.0).contains(&place.longitude)
-                    })
-            }))
+        && plugin.artifact.as_ref().is_none_or(Artifact::valid)
+        && (plugin.artifact.is_some()
+            || ((!matches!(plugin.source, Source::BoxTalk) || plugin.metric.is_some())
+                && (!matches!(plugin.source, Source::MeterArchive) || plugin.meter.is_some())
+                && (!matches!(plugin.source, Source::HttpsJson)
+                    || plugin.feed.as_ref().is_some_and(|feed| {
+                        (1..=24).contains(&feed.places.len())
+                            && feed.url.len() <= 1024
+                            && feed.decimals <= 3
+                            && feed.places.iter().all(|place| {
+                                !place.name.is_empty()
+                                    && place.name.len() <= 80
+                                    && (-90.0..=90.0).contains(&place.latitude)
+                                    && (-180.0..=180.0).contains(&place.longitude)
+                            })
+                    }))))
 }
 
 pub fn catalog(root: &Path) -> Vec<Plugin> {
@@ -183,8 +338,18 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
         }
         let candidates = fs::read(&path).ok().and_then(|bytes| {
             if let Ok(repository) = serde_json::from_slice::<Repository>(&bytes) {
-                return (repository.version == 1 && repository.plugins.len() <= 64)
-                    .then_some(repository.plugins);
+                return (repository.version == 1 && repository.plugins.len() <= 64).then(|| {
+                    repository
+                        .plugins
+                        .into_iter()
+                        .map(|mut plugin| {
+                            if let Some(artifact) = &mut plugin.artifact {
+                                artifact.origin = repository.origin.clone();
+                            }
+                            plugin
+                        })
+                        .collect()
+                });
             }
             serde_json::from_slice::<Plugin>(&bytes)
                 .ok()
@@ -194,9 +359,32 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
             eprintln!("Ignoring invalid catalog file {}", path.display());
             continue;
         };
-        for plugin in candidates {
+        for mut plugin in candidates {
             let valid = valid_plugin(&plugin) && seen.insert(plugin.id.clone());
             if valid {
+                if let Some(package) = plugin
+                    .artifact
+                    .as_ref()
+                    .and_then(|artifact| artifact.package_file(root, &plugin.id))
+                {
+                    if let Some(installed) = fs::read(package)
+                        .ok()
+                        .filter(|bytes| bytes.len() <= 32768)
+                        .and_then(|bytes| serde_json::from_slice::<Plugin>(&bytes).ok())
+                        .filter(|installed| {
+                            installed.id == plugin.id
+                                && installed.artifact.is_none()
+                                && valid_plugin(installed)
+                        })
+                    {
+                        plugin.installed_release = Some(installed.release);
+                        plugin.feed = installed.feed;
+                        plugin.metric = installed.metric;
+                        plugin.meter = installed.meter;
+                        plugin.text = installed.text;
+                        plugin.source = installed.source;
+                    }
+                }
                 plugins.push(plugin);
             } else {
                 eprintln!(

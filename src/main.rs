@@ -84,7 +84,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         energy: None,
         history: None,
         ambient: false,
-        weather_results: None,
+        location_results: None,
     };
     let mut ui = ui::Ui::new();
     ui.draw(&view);
@@ -123,6 +123,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use ui::Action;
 
     let root = Path::new("/mnt/data/toon-rust");
+    if std::env::args().nth(1).as_deref() == Some("--stock-session-return") {
+        let pid: libc::pid_t = std::env::args()
+            .nth(2)
+            .ok_or("Expected a stock UI process ID")?
+            .parse()?;
+        if pid < 2 {
+            return Err("Invalid stock UI process ID".into());
+        }
+        return wait_for_stock_return(pid);
+    }
     let display = device::Display::open()?;
     let touch = device::touchscreen()?;
     if std::env::args().nth(1).as_deref() == Some("--probe") {
@@ -184,12 +194,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .find(|plugin| plugin.id == id)
             .ok_or("Unknown plugin")?;
         let settings = plugins::Settings::load(root);
-        let config = plugin.feed.as_ref().ok_or("Plugin has no weather feed")?;
+        let config = plugin.feed.as_ref().ok_or("Plugin has no data feed")?;
         let location = feed::place(plugin, &settings).ok_or("Plugin has no location")?;
-        let reading = feed::fetch(&download::trust(root)?, config, location)?;
+        let reading = feed::fetch(&download::trust(root)?, config, location, settings.language)?;
         println!("{}: {} {}", location.name, reading.value, reading.detail);
-        for day in reading.forecast {
-            println!("{}  {}  {}", day.date, day.temperatures, day.condition);
+        for day in reading.rows {
+            println!("{}  {}  {}", day.date, day.range, day.condition);
+        }
+        return Ok(());
+    }
+    if std::env::args().nth(1).as_deref() == Some("--cache-plugin") {
+        let mut ids = std::env::args().skip(2).peekable();
+        if ids.peek().is_none() {
+            return Err("Expected at least one plugin ID".into());
+        }
+        download::trust(root)?;
+        plugins::sync(root, plugins::OFFICIAL)?;
+        let catalog = plugins::catalog(root);
+        for id in ids {
+            let plugin = catalog
+                .iter()
+                .find(|plugin| plugin.id == id)
+                .ok_or("Unknown plugin")?;
+            plugins::install(root, plugin)?;
+            println!("Cached {} {}", plugin.id, plugin.release);
         }
         return Ok(());
     }
@@ -221,9 +249,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog_sender, catalog_receiver) = std::sync::mpsc::channel();
     let mut catalog_busy = false;
     let mut catalog_message = None;
-    let (weather_sender, weather_receiver) = std::sync::mpsc::channel();
-    let mut weather_results = None;
-    let mut weather_busy = false;
+    let (install_sender, install_receiver) = std::sync::mpsc::channel();
+    let mut installing = false;
+    let (location_sender, location_receiver) = std::sync::mpsc::channel();
+    let mut location_results = None;
+    let mut location_busy = false;
     let (energy_requests, energy_jobs) =
         std::sync::mpsc::channel::<(energy::Meter, energy::Period)>();
     let (energy_replies, energy_results) = std::sync::mpsc::channel();
@@ -253,10 +283,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut feed_poll = std::time::Instant::now();
     let mut hardware = advanced::State::new();
     loop {
+        if let Ok((id, result)) = install_receiver.try_recv() {
+            installing = false;
+            catalog_message = Some(match result {
+                Ok(()) => {
+                    catalog = plugins::catalog(root);
+                    let mut next = settings.clone();
+                    if !next.installed.contains(&id) && next.installed.len() < 32 {
+                        next.installed.push(id);
+                    }
+                    match next.save(root) {
+                        Ok(()) => {
+                            settings = next;
+                            "Plugin ready".into()
+                        }
+                        Err(err) => format!("Could not save settings: {err}"),
+                    }
+                }
+                Err(error) => error,
+            });
+            dirty = true;
+        }
         dirty |= hardware.update();
-        if let Ok(result) = weather_receiver.try_recv() {
-            weather_busy = false;
-            weather_results = Some(result);
+        if let Ok(result) = location_receiver.try_recv() {
+            location_busy = false;
+            location_results = Some(result);
             dirty = true;
         }
         let idle = settings.idle_minutes > 0
@@ -376,7 +427,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 energy: energy_chart.as_ref(),
                 history: heating_history.as_ref(),
                 ambient,
-                weather_results: weather_results.as_ref(),
+                location_results: location_results.as_ref(),
             });
             display.present(&ui.pixels)?;
             dirty = false;
@@ -451,30 +502,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            Some(Action::WeatherSearch) => {
-                if !weather_busy {
-                    weather_results = None;
+            Some(Action::LocationSearch) => {
+                if !location_busy {
+                    location_results = None;
                 }
                 persist = false;
             }
-            Some(Action::RunWeatherSearch) => {
-                if !weather_busy {
-                    if let Some(query) = ui.take_repository() {
-                        let sender = weather_sender.clone();
+            Some(Action::RunLocationSearch(index)) => {
+                if !location_busy {
+                    let search = catalog
+                        .get(index)
+                        .and_then(|plugin| plugin.feed.as_ref()?.search.clone());
+                    if let (Some(query), Some(search)) = (ui.take_repository(), search) {
+                        let sender = location_sender.clone();
                         let language = settings.language;
-                        weather_busy = true;
-                        weather_results = None;
+                        location_busy = true;
+                        location_results = None;
                         std::thread::spawn(move || {
-                            let result =
-                                feed::search(&root.join("https-roots.pem"), &query, language);
+                            let result = feed::search(
+                                &root.join("https-roots.pem"),
+                                &search,
+                                &query,
+                                language,
+                            );
                             let _ = sender.send(result);
                         });
                     }
                 }
                 persist = false;
             }
-            Some(Action::UseWeatherPlace(plugin, index)) => {
-                let place = weather_results
+            Some(Action::UseLocationResult(plugin, index)) => {
+                let place = location_results
                     .as_ref()
                     .and_then(|result| result.as_ref().ok())
                     .and_then(|rows| rows.get(index));
@@ -485,10 +543,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     persist = false;
                 }
             }
-            Some(Action::Toggle(index)) => {
-                let id = &catalog[index].id;
-                if next.installed.contains(id) {
+            Some(action @ (Action::Toggle(index) | Action::UpdatePlugin(index))) => {
+                let plugin = &catalog[index];
+                let id = &plugin.id;
+                if installing {
+                    persist = false;
+                } else if matches!(action, Action::Toggle(_)) && next.installed.contains(id) {
                     next.installed.retain(|installed| installed != id);
+                } else if plugin.artifact.is_some()
+                    && (next.installed.contains(id) || next.installed.len() < 32)
+                {
+                    let plugin = plugin.clone();
+                    let sender = install_sender.clone();
+                    installing = true;
+                    persist = false;
+                    catalog_message = Some("Downloading plugin…".into());
+                    std::thread::spawn(move || {
+                        let result = plugins::install(root, &plugin);
+                        let _ = sender.send((plugin.id, result));
+                    });
                 } else if next.installed.len() < 32 {
                     next.installed.push(id.clone());
                 } else {
@@ -501,6 +574,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 next.installed.insert(destination, tile);
             }
             Some(Action::Stock) => return Ok(()),
+            Some(Action::StockMeterSession) => {
+                std::fs::write("/run/toonshift-temporary-stock", b"meter")?;
+                return Ok(());
+            }
             Some(Action::Energy(meter, period)) => {
                 selected_energy = Some((meter, period));
                 energy_chart = None;
@@ -638,4 +715,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         dirty = true;
     }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_stock_return(pid: libc::pid_t) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    let input = device::touchscreen().ok();
+    let end = Instant::now() + Duration::from_secs(600);
+    let mut first = Instant::now();
+    let mut taps = 0;
+    while Instant::now() < end && unsafe { libc::kill(pid, 0) } == 0 {
+        let interval = Duration::from_millis(500);
+        let Some(input) = &input else {
+            std::thread::sleep(interval);
+            continue;
+        };
+        if let Ok(Ok(touch)) = input.recv_timeout(interval) {
+            let in_corner = |point: (usize, usize)| point.0 < 100 && point.1 < 100;
+            if first.elapsed() >= Duration::from_secs(4)
+                || !in_corner(touch.from)
+                || !in_corner(touch.to)
+            {
+                taps = 0;
+                first = Instant::now();
+            }
+            if in_corner(touch.from) && in_corner(touch.to) {
+                if taps == 0 {
+                    first = Instant::now();
+                }
+                taps += 1;
+                if taps >= 5 {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
 }

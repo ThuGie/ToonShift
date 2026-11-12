@@ -35,6 +35,10 @@ impl Language {
             "Domestic hot water" => "Warm tapwater",
             "Saved hot-water target" => "Opgeslagen tapwatertemperatuur",
             "Stock meter installer" => "Originele meterinstallatie",
+            "Open stock for 10 min" => "Open origineel 10 min",
+            "To return sooner, tap the top-left corner five times." => {
+                "Tik vijf keer linksboven om eerder terug te keren."
+            }
             "Hot-water controls require a connected OpenTherm boiler." => {
                 "Tapwaterinstellingen vereisen een verbonden OpenTherm-ketel."
             }
@@ -89,7 +93,7 @@ impl Language {
             "Recent temperature history" => "Recente temperatuurhistorie",
             "Last raw sensor" => "Laatste ruwe meting",
             "No heating history" => "Geen verwarmingshistorie",
-            "Back to forecast" => "Naar verwachting",
+            "Back to readings" => "Terug naar metingen",
             "Change location" => "Wijzig locatie",
             "Search location" => "Zoek locatie",
             "City or postcode" => "Plaats of postcode",
@@ -206,7 +210,9 @@ impl Language {
             "Boiler" => "Ketel",
             "Next target" => "Volgende doel",
             "Quick note" => "Notitie",
-            "Weather" => "Weer",
+            "Downloading plugin…" => "Plugin downloaden…",
+            "Plugin ready" => "Plugin gereed",
+            "Update" => "Bijwerken",
             "Gas usage" => "Gasverbruik",
             "Humidity" => "Luchtvochtigheid",
             "No reading" => "Geen meting",
@@ -220,30 +226,6 @@ impl Language {
             "Applying Wi-Fi settings…" => "Wifi-instellingen toepassen…",
             "Downloading catalog…" => "Catalogus downloaden…",
             "Could not refresh data" => "Gegevens konden niet worden vernieuwd",
-            "Clear" => "Helder",
-            "Mainly clear" => "Meestal helder",
-            "Partly cloudy" => "Halfbewolkt",
-            "Overcast" => "Bewolkt",
-            "Fog" => "Mist",
-            "Freezing fog" => "Aanvriezende mist",
-            "Light drizzle" => "Lichte motregen",
-            "Drizzle" => "Motregen",
-            "Heavy drizzle" => "Zware motregen",
-            "Freezing drizzle" => "Aanvriezende motregen",
-            "Light rain" => "Lichte regen",
-            "Rain" => "Regen",
-            "Heavy rain" => "Zware regen",
-            "Freezing rain" => "IJzel",
-            "Light snow" => "Lichte sneeuw",
-            "Snow" => "Sneeuw",
-            "Heavy snow" => "Zware sneeuw",
-            "Snow grains" => "Motsneeuw",
-            "Light showers" => "Lichte buien",
-            "Showers" => "Buien",
-            "Heavy showers" => "Zware buien",
-            "Snow showers" => "Sneeuwbuien",
-            "Thunderstorm" => "Onweer",
-            "Thunderstorm with hail" => "Onweer met hagel",
             _ => message,
         }
     }

@@ -30,6 +30,9 @@ try {
         }
         $seen[$plugin.id] = $true
     }
+    $feed | Add-Member -Force -NotePropertyName origin -NotePropertyValue "https://raw.githubusercontent.com/$Repository/$Commit/"
+    $feed | ConvertTo-Json -Depth 30 -Compress | Set-Content -Encoding utf8NoBOM -LiteralPath $temp
+    if ((Get-Item -LiteralPath $temp).Length -gt 32768) { throw 'Catalog with source metadata exceeds 32 KiB' }
     & scp -O @sshOptions -- $temp "${Toon}:$staging"
     if ($LASTEXITCODE) { throw 'Catalog upload failed' }
     & ssh @sshOptions -- $Toon "chmod 600 '$staging' && mv '$staging' '$destination'"

@@ -1,4 +1,5 @@
-use crate::plugins::{Feed, Place, Plugin, Settings, Source};
+use crate::plugins::{Feed, LocationSearch, Place, Plugin, Settings, Source};
+use crate::{energy, language::Language};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -8,21 +9,26 @@ use std::time::{Duration, Instant};
 pub struct Reading {
     pub value: String,
     pub detail: String,
-    pub forecast: Vec<ForecastDay>,
+    pub rows: Vec<RangeRow>,
 }
 
 #[derive(Clone)]
-pub struct ForecastDay {
+pub struct RangeRow {
     pub date: String,
-    pub temperatures: String,
+    pub range: String,
     pub condition: String,
 }
 
 type Key = (String, String, String);
 type ResultRow = (Key, Result<Reading, String>);
 
+enum Task {
+    Feed(Box<Feed>, Place, Language),
+    Meter(energy::Meter),
+}
+
 pub struct Feeds {
-    requests: Sender<(Key, Feed, Place)>,
+    requests: Sender<(Key, Task)>,
     replies: Receiver<ResultRow>,
     due: HashMap<Key, Instant>,
 }
@@ -52,11 +58,27 @@ pub fn place<'a>(plugin: &'a Plugin, settings: &'a Settings) -> Option<&'a Place
 impl Feeds {
     pub fn new(root: &Path) -> std::io::Result<Self> {
         let ca = crate::download::trust(root)?;
-        let (requests, jobs) = mpsc::channel::<(Key, Feed, Place)>();
+        let (requests, jobs) = mpsc::channel::<(Key, Task)>();
         let (results, replies) = mpsc::channel();
         std::thread::spawn(move || {
-            for (key, feed, place) in jobs {
-                let value = fetch(&ca, &feed, &place);
+            for (key, task) in jobs {
+                let value = match task {
+                    Task::Feed(feed, place, language) => fetch(&ca, &feed, &place, language),
+                    Task::Meter(meter) => {
+                        energy::load(meter, energy::Period::Day).map(|chart| Reading {
+                            value: chart.total.map_or_else(
+                                || "No meter data".into(),
+                                |value| format!("{value:.2} {}", chart.unit),
+                            ),
+                            detail: if chart.partial {
+                                "Incomplete readings".into()
+                            } else {
+                                "Recorded total".into()
+                            },
+                            rows: Vec::new(),
+                        })
+                    }
+                };
                 if results.send((key, value)).is_err() {
                     break;
                 }
@@ -78,21 +100,34 @@ impl Feeds {
         let now = Instant::now();
         let mut redraw = false;
         let active = |plugin: &&Plugin| {
-            matches!(plugin.source, Source::HttpsJson) && settings.installed.contains(&plugin.id)
+            matches!(plugin.source, Source::HttpsJson | Source::MeterArchive)
+                && settings.installed.contains(&plugin.id)
         };
         let key = |plugin: &Plugin| {
-            let place = place(plugin, settings)?;
-            Some((
+            let options = place(plugin, settings).map_or_else(String::new, |place| {
+                format!(
+                    "{},{},{},{}",
+                    place.latitude,
+                    place.longitude,
+                    place.name,
+                    settings.language == Language::Dutch
+                )
+            });
+            (
                 plugin.id.clone(),
-                plugin.release.clone(),
-                format!("{},{},{}", place.latitude, place.longitude, place.name),
-            ))
+                plugin
+                    .installed_release
+                    .as_ref()
+                    .unwrap_or(&plugin.release)
+                    .clone(),
+                options,
+            )
         };
         self.due.retain(|existing, _| {
             catalog
                 .iter()
                 .filter(active)
-                .any(|plugin| key(plugin).as_ref() == Some(existing))
+                .any(|plugin| &key(plugin) == existing)
         });
         for (result_key, result) in self.replies.try_iter() {
             if !self.due.contains_key(&result_key) {
@@ -108,7 +143,7 @@ impl Feeds {
                     Reading {
                         value: "Unavailable".into(),
                         detail: "Could not refresh data".into(),
-                        forecast: Vec::new(),
+                        rows: Vec::new(),
                     }
                 }
             };
@@ -116,16 +151,24 @@ impl Feeds {
             redraw = true;
         }
         for plugin in catalog.iter().filter(active) {
-            let Some(key) = key(plugin) else {
-                continue;
-            };
+            let key = key(plugin);
             if self.due.get(&key).is_none_or(|due| *due <= now) {
                 if !self.due.contains_key(&key) {
                     values.remove(&plugin.id);
                 }
                 self.due.insert(key.clone(), now + Duration::from_secs(900));
-                if let (Some(feed), Some(place)) = (&plugin.feed, place(plugin, settings)) {
-                    let _ = self.requests.send((key, feed.clone(), place.clone()));
+                let task =
+                    match plugin.source {
+                        Source::HttpsJson => plugin.feed.as_ref().zip(place(plugin, settings)).map(
+                            |(feed, place)| {
+                                Task::Feed(Box::new(feed.clone()), place.clone(), settings.language)
+                            },
+                        ),
+                        Source::MeterArchive => plugin.meter.map(Task::Meter),
+                        _ => None,
+                    };
+                if let Some(task) = task {
+                    let _ = self.requests.send((key, task));
                 }
             }
         }
@@ -133,28 +176,33 @@ impl Feeds {
     }
 }
 
-pub fn fetch(ca: &Path, feed: &Feed, place: &Place) -> Result<Reading, String> {
+pub fn fetch(ca: &Path, feed: &Feed, place: &Place, language: Language) -> Result<Reading, String> {
     let url = feed
         .url
         .replace("{latitude}", &place.latitude.to_string())
         .replace("{longitude}", &place.longitude.to_string());
-    if !url.starts_with("https://api.open-meteo.com/v1/") || url.contains(['\r', '\n', '\\']) {
-        return Err("Feed URL is outside the supported weather service".into());
-    }
-    let response = crate::download::get(ca, &url)?;
+    let response = crate::download::public_json(ca, &url)?;
     let json: serde_json::Value = serde_json::from_slice(&response).map_err(|e| e.to_string())?;
     let number = json
         .pointer(&feed.value)
         .and_then(serde_json::Value::as_f64)
         .ok_or("Feed returned no numeric value")?;
+    let label = |code: i64| {
+        let key = code.to_string();
+        (language == Language::Dutch)
+            .then(|| feed.labels_nl.get(&key))
+            .flatten()
+            .or_else(|| feed.labels.get(&key))
+            .cloned()
+            .unwrap_or_default()
+    };
     let detail = json
         .pointer(&feed.condition)
         .and_then(serde_json::Value::as_i64)
-        .and_then(|code| feed.labels.get(&code.to_string()))
-        .cloned()
+        .map(label)
         .unwrap_or_default();
-    let forecast = feed
-        .forecast
+    let rows = feed
+        .series
         .as_ref()
         .map(|forecast| {
             let series = |pointer| json.pointer(pointer).and_then(serde_json::Value::as_array);
@@ -176,21 +224,17 @@ pub fn fetch(ca: &Path, feed: &Feed, place: &Place) -> Result<Reading, String> {
                 .take(5)
                 .filter_map(|(((date, low), high), code)| {
                     let date = date.as_str()?.to_owned();
-                    let temperatures = format!(
+                    let range = format!(
                         "{:.0}{} / {:.0}{}",
                         low.as_f64()?,
                         feed.suffix,
                         high.as_f64()?,
                         feed.suffix
                     );
-                    let condition = code
-                        .as_i64()
-                        .and_then(|code| feed.labels.get(&code.to_string()))
-                        .cloned()
-                        .unwrap_or_default();
-                    Some(ForecastDay {
+                    let condition = code.as_i64().map(label).unwrap_or_default();
+                    Some(RangeRow {
                         date,
-                        temperatures,
+                        range,
                         condition,
                     })
                 })
@@ -198,14 +242,19 @@ pub fn fetch(ca: &Path, feed: &Feed, place: &Place) -> Result<Reading, String> {
         })
         .unwrap_or_default();
     Ok(Reading {
-        value: format!("{number:.1}{}", feed.suffix),
+        value: format!(
+            "{number:.precision$}{}",
+            feed.suffix,
+            precision = feed.decimals
+        ),
         detail,
-        forecast,
+        rows,
     })
 }
 
 pub fn search(
     ca: &Path,
+    search: &LocationSearch,
     query: &str,
     language: crate::language::Language,
 ) -> Result<Vec<Place>, String> {
@@ -219,22 +268,29 @@ pub fn search(
         "en"
     };
     let query = crate::download::query_value(query);
-    let url = format!("https://geocoding-api.open-meteo.com/v1/search?name={query}&count=5&language={language}&format=json");
-    let body = crate::download::get(ca, &url)?;
+    let url = search
+        .url
+        .replace("{query}", &query)
+        .replace("{language}", language);
+    let body = crate::download::public_json(ca, &url)?;
     let json: serde_json::Value =
         serde_json::from_slice(&body).map_err(|_| "Invalid location response")?;
-    let Some(results) = json["results"].as_array() else {
+    let Some(results) = json
+        .pointer(&search.results)
+        .and_then(serde_json::Value::as_array)
+    else {
         return Ok(Vec::new());
     };
     Ok(results
         .iter()
         .filter_map(|row| {
-            let name = row["name"].as_str()?;
-            let latitude = row["latitude"].as_f64()?;
-            let longitude = row["longitude"].as_f64()?;
-            let region = row["admin1"]
-                .as_str()
-                .or_else(|| row["country"].as_str())
+            let name = row.pointer(&search.name)?.as_str()?;
+            let latitude = row.pointer(&search.latitude)?.as_f64()?;
+            let longitude = row.pointer(&search.longitude)?.as_f64()?;
+            let region = search
+                .region
+                .iter()
+                .find_map(|path| row.pointer(path)?.as_str())
                 .unwrap_or("");
             let name = if region.is_empty() {
                 name.to_owned()
@@ -249,5 +305,6 @@ pub fn search(
                 },
             )
         })
+        .take(5)
         .collect())
 }
