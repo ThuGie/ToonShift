@@ -17,6 +17,7 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Live" => "Actueel",
             "Gaps and muted bars indicate missing data" => {
                 "Gaten en grijze balken tonen ontbrekende data"
             }

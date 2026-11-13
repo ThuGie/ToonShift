@@ -2352,6 +2352,26 @@ impl Ui {
             false,
             Action::EnergyRates,
         );
+        let live_metric = match meter {
+            Meter::Electricity => Some(crate::plugins::Metric::Electricity),
+            Meter::Gas => Some(crate::plugins::Metric::Gas),
+            _ => None,
+        };
+        if let Some(metric) = live_metric {
+            let live = crate::telemetry::display(metric, view.telemetry);
+            self.raw_text(
+                56,
+                242,
+                &format!(
+                    "{} · {}",
+                    self.language.translate("Live"),
+                    self.language.translate(&live)
+                ),
+                17,
+                p.muted,
+                745,
+            );
+        }
         let chart = match view.energy {
             Some(Ok(chart)) => chart,
             Some(Err(error)) => {
@@ -2433,11 +2453,11 @@ impl Ui {
                 )
             },
         );
-        self.text(56, 268, &summary, 22, p.text, 395);
+        self.text(56, 284, &summary, 22, p.text, 395);
         if let Some(cost) = chart.estimated_cost(meter, view.settings.energy_rates) {
             self.text(
                 412,
-                268,
+                284,
                 &format!("{} €{cost:.2}", self.language.translate("Estimated cost")),
                 21,
                 p.text,
