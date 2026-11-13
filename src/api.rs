@@ -74,9 +74,11 @@ impl Events {
 
 #[cfg(target_os = "linux")]
 pub fn start(root: &Path, commands: Sender<Work>, events: Arc<Events>) -> io::Result<()> {
-    let token = load_token(root)?;
+    let credentials = Arc::new(Credentials {
+        control: load_token(root)?,
+        clients: Some(root.join("api-clients")),
+    });
     let listener = TcpListener::bind(LISTEN)?;
-    let token = Arc::new(token);
     let clients = Arc::new(Slots::new(12));
     let subscribers = Arc::new(Slots::new(4));
     std::thread::spawn(move || {
@@ -84,8 +86,8 @@ pub fn start(root: &Path, commands: Sender<Work>, events: Arc<Events>) -> io::Re
             match connection {
                 Ok(mut stream) => {
                     let Some(slot) = clients.take() else { continue };
-                    let (token, commands, events, subscribers) = (
-                        token.clone(),
+                    let (credentials, commands, events, subscribers) = (
+                        credentials.clone(),
                         commands.clone(),
                         events.clone(),
                         subscribers.clone(),
@@ -93,7 +95,7 @@ pub fn start(root: &Path, commands: Sender<Work>, events: Arc<Events>) -> io::Re
                     std::thread::spawn(move || {
                         let _slot = slot;
                         if let Err(error) =
-                            serve(&mut stream, &token, &commands, &events, &subscribers)
+                            serve(&mut stream, &credentials, &commands, &events, &subscribers)
                         {
                             eprintln!("ToonShift API request failed: {error}");
                         }
@@ -167,9 +169,60 @@ fn equal_secret(left: &[u8], right: &[u8]) -> bool {
             == 0
 }
 
+struct Credentials {
+    control: String,
+    clients: Option<std::path::PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Grant {
+    Read,
+    Control,
+}
+
+impl Credentials {
+    fn grant(&self, token: &str) -> Option<Grant> {
+        if equal_secret(token.as_bytes(), self.control.as_bytes()) {
+            return Some(Grant::Control);
+        }
+        let (id, secret) = token.split_once('.')?;
+        if !(1..=40).contains(&id.len())
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || secret.len() != 64
+            || !secret.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let directory = self.clients.as_ref()?;
+        let path = directory.join(id);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let info = std::fs::symlink_metadata(directory).ok()?;
+            if !info.is_dir() || info.permissions().mode() & 0o077 != 0 {
+                return None;
+            }
+            let info = std::fs::symlink_metadata(&path).ok()?;
+            if !info.is_file() || info.permissions().mode() & 0o077 != 0 || info.len() > 128 {
+                return None;
+            }
+        }
+        let data = std::fs::read_to_string(path).ok()?;
+        let (scope, expected) = data.trim_end().split_once(' ')?;
+        if !equal_secret(secret.as_bytes(), expected.as_bytes()) {
+            return None;
+        }
+        match scope {
+            "read" => Some(Grant::Read),
+            "control" => Some(Grant::Control),
+            _ => None,
+        }
+    }
+}
+
 fn serve(
     stream: &mut TcpStream,
-    token: &str,
+    credentials: &Credentials,
     commands: &Sender<Work>,
     events: &Events,
     subscribers: &Arc<Slots>,
@@ -177,10 +230,15 @@ fn serve(
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut request = BufReader::new(stream.try_clone()?);
-    let (status, response) = handle(&mut request, token, commands, events)?;
+    let (status, response) = handle(&mut request, credentials, commands, events)?;
     if matches!(status, "event-stream" | "telemetry-stream") {
         if let Some(_slot) = subscribers.take() {
-            return stream_events(stream, events, status == "telemetry-stream");
+            let token = response
+                .as_str()
+                .ok_or_else(|| io::Error::other("Missing stream authorization"))?;
+            return stream_events(stream, events, status == "telemetry-stream", || {
+                credentials.grant(token).is_some()
+            });
         }
         return send_json(
             stream,
@@ -204,7 +262,12 @@ fn send_json(stream: &mut TcpStream, status: &str, response: Value) -> io::Resul
     )
 }
 
-fn stream_events(stream: &mut impl Write, events: &Events, telemetry: bool) -> io::Result<()> {
+fn stream_events(
+    stream: &mut impl Write,
+    events: &Events,
+    telemetry: bool,
+    authorized: impl Fn() -> bool,
+) -> io::Result<()> {
     stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nretry: 2000\n\n")?;
     let until = Instant::now() + Duration::from_secs(300);
     let mut seen = None;
@@ -229,6 +292,9 @@ fn stream_events(stream: &mut impl Write, events: &Events, telemetry: bool) -> i
             ((snapshot.readings_revision, available), values)
         });
         drop(snapshot);
+        if !authorized() {
+            break;
+        }
         let mut sent = false;
         if let Some(payload) = status {
             seen = Some(revision);
@@ -254,7 +320,7 @@ fn stream_events(stream: &mut impl Write, events: &Events, telemetry: bool) -> i
 
 fn handle(
     request: &mut impl BufRead,
-    token: &str,
+    credentials: &Credentials,
     commands: &Sender<Work>,
     events: &Events,
 ) -> io::Result<(&'static str, Value)> {
@@ -300,11 +366,17 @@ fn handle(
             return Ok(bad_request());
         }
     }
-    if !authorization
+    let token = authorization
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|value| equal_secret(value.as_bytes(), token.as_bytes()))
-    {
+        .unwrap_or_default();
+    let Some(grant) = credentials.grant(token) else {
         return Ok(("401 Unauthorized", json!({"error":"Bearer token required"})));
+    };
+    if grant == Grant::Read && method != "GET" {
+        return Ok((
+            "403 Forbidden",
+            json!({"error":"Control permission required"}),
+        ));
     }
     let mut body = vec![0; size.unwrap_or_default()];
     request.read_exact(&mut body)?;
@@ -340,8 +412,8 @@ fn handle(
                 None => ("422 Unprocessable Content", json!({"error":"Invalid vacation ID"})),
             })
         }
-        ("GET", "/v1/events") if query.is_empty() => Ok(("event-stream", Value::Null)),
-        ("GET", "/v1/events") if query == "telemetry=1" => Ok(("telemetry-stream", Value::Null)),
+        ("GET", "/v1/events") if query.is_empty() => Ok(("event-stream", json!(token))),
+        ("GET", "/v1/events") if query == "telemetry=1" => Ok(("telemetry-stream", json!(token))),
         ("GET", "/v1/telemetry") if query.is_empty() => Ok(("200 OK", events.readings())),
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
@@ -551,6 +623,45 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
+    fn credentials() -> Credentials {
+        Credentials {
+            control: "test-token".into(),
+            clients: None,
+        }
+    }
+
+    #[test]
+    fn read_client_cannot_write_and_can_be_revoked() {
+        let path = std::env::temp_dir().join(format!("toonshift-api-test-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let secret = "ab".repeat(32);
+        let file = path.join("monitor");
+        std::fs::write(&file, format!("read {secret}")).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let credentials = Credentials {
+            control: "test-token".into(),
+            clients: Some(path.clone()),
+        };
+        let (commands, _) = mpsc::channel();
+        let events = Events::default();
+        let request = |method, route| {
+            let request = format!(
+                "{method} {route} HTTP/1.1\r\nAuthorization: Bearer monitor.{secret}\r\n\r\n"
+            );
+            handle(&mut request.as_bytes(), &credentials, &commands, &events)
+                .unwrap()
+                .0
+        };
+        assert_eq!(request("GET", "/v1/telemetry"), "200 OK");
+        assert_eq!(request("PUT", "/v1/setpoint"), "403 Forbidden");
+        std::fs::remove_file(file).unwrap();
+        assert_eq!(request("GET", "/v1/telemetry"), "401 Unauthorized");
+        std::fs::remove_dir(path).unwrap();
+    }
+
     #[test]
     fn telemetry_keeps_zero_and_expires_stale_measurements() {
         use crate::plugins::Metric;
@@ -567,7 +678,7 @@ mod tests {
         let (commands, _) = mpsc::channel();
         let mut request =
             &b"GET /v1/telemetry HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n"[..];
-        let (status, values) = handle(&mut request, "test-token", &commands, &events).unwrap();
+        let (status, values) = handle(&mut request, &credentials(), &commands, &events).unwrap();
         assert_eq!(status, "200 OK");
         assert_eq!(values["electricity"]["value"], 0.0);
         assert!((values["room_temperature"]["value"].as_f64().unwrap() - 21.4).abs() < 1e-9);
@@ -577,13 +688,18 @@ mod tests {
 
     #[test]
     fn event_stream_requires_auth_and_delivers_current_state() {
-        let token = "test-token";
+        let credentials = credentials();
         let (commands, _) = mpsc::channel();
         let mut unauthorized = &b"GET /v1/events HTTP/1.1\r\n\r\n"[..];
         assert_eq!(
-            handle(&mut unauthorized, token, &commands, &Events::default())
-                .unwrap()
-                .0,
+            handle(
+                &mut unauthorized,
+                &credentials,
+                &commands,
+                &Events::default()
+            )
+            .unwrap()
+            .0,
             "401 Unauthorized"
         );
 
@@ -597,7 +713,13 @@ mod tests {
         let producer = events.clone();
         let subscribers = Arc::new(Slots::new(1));
         std::thread::spawn(move || {
-            let _ = serve(&mut server, token, &commands, &producer, &subscribers);
+            let _ = serve(
+                &mut server,
+                &credentials,
+                &commands,
+                &producer,
+                &subscribers,
+            );
         });
         client
             .write_all(
