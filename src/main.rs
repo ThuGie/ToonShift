@@ -71,6 +71,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         current_setpoint: "2050".into(),
         program_state: "1".into(),
         active_state: "1".into(),
+        error_found: "0".into(),
         burner_info: "1".into(),
         connection: "1".into(),
         next_setpoint: "1900".into(),

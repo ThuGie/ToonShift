@@ -22,6 +22,8 @@ pub struct Status {
     pub current_modulation_level: String,
     #[serde(default)]
     pub ot_comm_error: String,
+    #[serde(default)]
+    pub error_found: String,
 }
 
 pub struct History {
@@ -104,6 +106,7 @@ pub fn export_diagnostics(root: &std::path::Path) -> std::io::Result<()> {
             "1" => Some(true),
             _ => None,
         }),
+        "firmware_heating_error": status.as_ref().and_then(|s| s.heating_error()),
     });
     let temporary = root.join("diagnostics.json.tmp");
     match fs::remove_file(&temporary) {
@@ -161,6 +164,13 @@ pub fn history() -> Result<History, String> {
 }
 
 impl Status {
+    pub fn heating_error(&self) -> Option<bool> {
+        match self.error_found.as_str() {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        }
+    }
     pub fn target(&self) -> Option<i32> {
         self.current_setpoint.parse().ok()
     }

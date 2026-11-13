@@ -2548,21 +2548,27 @@ impl Ui {
             Action::HeatingDetails,
         );
         if let Some(status) = view.status {
-            let boiler = if status.connection == "0" {
-                "Boiler offline"
-            } else {
-                "Boiler connected"
+            let boiler = match status.connection.as_str() {
+                "0" => "Boiler offline",
+                "1" => "Boiler connected",
+                _ => "Boiler link unknown",
             };
             self.text(56, 197, boiler, 23, p.text, 475);
-            if status.connection != "0" {
+            if status.connection == "1" {
                 let detail = format!(
                     "{}°C · {}%",
                     status.current_internal_boiler_setpoint, status.current_modulation_level
                 );
-                self.text(487, 197, &detail, 23, p.muted, 965);
-                if !matches!(status.ot_comm_error.as_str(), "" | "0") {
-                    self.text(740, 197, "OpenTherm error", 21, p.muted, 965);
-                }
+                self.text(340, 197, &detail, 23, p.muted, 620);
+            }
+            let fault = match (status.heating_error(), status.ot_comm_error.as_str()) {
+                (Some(true), "1") => Some("Heating fault · OpenTherm error"),
+                (_, "1") => Some("OpenTherm error"),
+                (Some(true), _) => Some("Heating fault"),
+                _ => None,
+            };
+            if let Some(fault) = fault {
+                self.text(625, 197, fault, 19, p.accent, 965);
             }
         }
         self.text(56, 235, "Room sensor", 19, p.muted, 300);
