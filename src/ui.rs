@@ -69,6 +69,7 @@ pub enum Action {
     KeyboardMode,
     KeyboardShift,
     JoinNetwork,
+    ReconnectWifi,
     RepositoryEntry,
     CloseRepository,
     SyncRepository,
@@ -1173,6 +1174,13 @@ impl Ui {
                 Action::NetworkPage(page + 1),
             );
         }
+        self.button(
+            Rect(342, 430, 340, 44),
+            "Reconnect saved network",
+            p,
+            false,
+            Action::ReconnectWifi,
+        );
         if let Some(message) = view.network_message {
             self.text(56, 515, message, 20, p.muted, 963);
         }

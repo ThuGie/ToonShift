@@ -17,7 +17,11 @@ pub fn invoke(package: &str, service: &str, actions: &[(&str, &str)]) -> io::Res
 }
 
 pub fn send_thermostat_action(verb: &str, arguments: &str) -> io::Result<()> {
-    exchange("happ_thermstat", "Thermostat", &[(verb, arguments)], false).map(|_| ())
+    send_action("happ_thermstat", "Thermostat", verb, arguments)
+}
+
+pub fn send_action(package: &str, service: &str, verb: &str, arguments: &str) -> io::Result<()> {
+    exchange(package, service, &[(verb, arguments)], false).map(|_| ())
 }
 
 fn exchange(

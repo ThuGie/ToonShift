@@ -983,12 +983,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 persist = false;
             }
             Some(Action::JoinNetwork) => {
-                if let Some(form) = ui.take_wifi().filter(|_| !joining) {
+                if let Some(form) = (!joining && !scanning).then(|| ui.take_wifi()).flatten() {
                     joining = true;
                     network_message = Some("Applying Wi-Fi settings…".into());
                     let sender = join_sender.clone();
                     std::thread::spawn(move || {
                         let _ = sender.send((network::join(form), network::connection()));
+                    });
+                }
+                persist = false;
+            }
+            Some(Action::ReconnectWifi) => {
+                if !joining && !scanning {
+                    joining = true;
+                    network_message = Some("Reconnecting to saved Wi-Fi…".into());
+                    let sender = join_sender.clone();
+                    std::thread::spawn(move || {
+                        let _ = sender.send((network::reconnect(), network::connection()));
                     });
                 }
                 persist = false;

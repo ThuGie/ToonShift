@@ -276,6 +276,39 @@ pub fn join(join: Join) -> Result<(), String> {
 }
 
 #[cfg(unix)]
+pub fn reconnect() -> Result<(), String> {
+    let (saved, bssid) = saved_network()?.ok_or("No saved Wi-Fi network.")?;
+    // This firmware action resets the default-route interface, even when it is wired.
+    let wifi_is_default = std::fs::read_to_string("/proc/net/route").is_ok_and(|routes| {
+        let mut defaults = routes.lines().filter_map(|row| {
+            let mut fields = row.split_whitespace();
+            let interface = fields.next()?;
+            (fields.next()? == "00000000").then_some(interface)
+        });
+        defaults.next() == Some("wlan0") && defaults.all(|interface| interface == "wlan0")
+    });
+    if wifi_is_default {
+        crate::boxtalk::send_action(
+            "hcb_netcon",
+            "NetworkInformation",
+            "ResetWirelessNetwork",
+            "",
+        )
+        .map_err(|_| "Could not request a Wi-Fi reconnect.")?;
+        std::thread::sleep(Duration::from_secs(2));
+        if wait_for_connection(&saved, Instant::now() + Duration::from_secs(15)) {
+            return Ok(());
+        }
+    }
+    if matches!(send_join(&saved, &bssid), Ok(Ok(())))
+        && wait_for_connection(&saved, Instant::now() + Duration::from_secs(15))
+    {
+        return Ok(());
+    }
+    Err("Could not reconnect to the saved Wi-Fi network.".into())
+}
+
+#[cfg(unix)]
 fn wait_for_connection(join: &Join, deadline: Instant) -> bool {
     let path = format!("/run/toonshift-wpa-{}", std::process::id());
     let _ = std::fs::remove_file(&path);

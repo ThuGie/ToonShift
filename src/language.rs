@@ -17,6 +17,13 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Reconnect saved network" => "Opnieuw verbinden",
+            "Reconnecting to saved Wi-Fi…" => "Opnieuw verbinden met opgeslagen Wi-Fi…",
+            "No saved Wi-Fi network." => "Geen opgeslagen Wi-Fi-netwerk.",
+            "Could not request a Wi-Fi reconnect." => "Kon niet opnieuw verbinden met Wi-Fi.",
+            "Could not reconnect to the saved Wi-Fi network." => {
+                "Kon niet verbinden met het opgeslagen Wi-Fi-netwerk."
+            }
             "IP address" => "IP-adres",
             "Subnet mask" => "Subnetmasker",
             "Gateway" => "Gateway",

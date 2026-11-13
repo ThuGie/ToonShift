@@ -73,7 +73,8 @@ The stock interface subscribes to the BoxTalk `thermostatInfo` dataset for compe
 | --- | --- |
 | `hcb_netcon` · `getWirelessNetworks` | Verified scan results with `ESSID`, `Address`, `Signal`, `Quality`, `Channel`, and security fields. Can take several seconds |
 | `hcb_netcon` · `getWirelessNetworkInformation` | Verified output with connection details including SSID and IP configuration. Treat this response as private |
-| `hcb_netcon` · `setWirelessNetworkInformation` | HTTP and BoxTalk handler names present in the binary. The write contract needs confirmation |
+| `hcb_netcon` · `SetWirelessNetworkInformation` | BoxTalk `NetworkInformation` action. Firmware parses `iface`, `type`, `essid`, `enc`, `auth`, `key`, and optional `bssid`. Static IPv4 adds `ipaddress`, `netmask`, `default_gateway`, and `nameserver`. Live writes need verification |
+| `hcb_netcon` · `ResetWirelessNetwork` | Binary inspection shows a reset of the current default-route interface through `ifi_defgw_reset`. It does not clear saved credentials. ToonShift checks the saved Wi-Fi association after requesting reconnect |
 | `hcb_netcon` · `getWirelessChannels` | Identified in the firmware. Timed out during the read probe |
 | `hcb_config` · `getLocale`, `getVersionInfo.json` | Verified locale/timezone and firmware/platform metadata |
 | `hcb_config` · `getDeviceList.json`, `getLocationList.json`, `getObjectList.json`, `getPackageHandlerList.json` | Verified inventory responses. They may contain private device identifiers |
