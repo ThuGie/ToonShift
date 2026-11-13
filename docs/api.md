@@ -19,6 +19,7 @@ curl -H "Authorization: Bearer $TOONSHIFT_TOKEN" http://127.0.0.1:18082/v1/statu
 | --- | --- | --- |
 | `GET /v1/status` | — | `currentTemp`, `currentSetpoint`, `programState`, `burnerInfo`, `connection`, `nextSetpoint`, `nextTime` as strings |
 | `GET /v1/events` | — | Authenticated Server-Sent Events with `status` or `unavailable` events |
+| `GET /v1/events?telemetry=1` | — | Includes `telemetry` snapshots using the same fields as `/v1/telemetry`. A reading becoming stale is reported within the keepalive interval |
 | `GET /v1/telemetry` | — | Live room temperature, relative humidity, electricity demand and gas flow. Each available reading includes its value, unit and age in seconds. Missing or expired readings are null |
 | `PUT /v1/setpoint` | `{"centi_celsius":2050}` | Sets the target to 20.50°C. Range is 600–3000 in hundredths of a degree Celsius |
 | `PUT /v1/schedule` | `{"enabled":true}` | Enables or disables the stored program |

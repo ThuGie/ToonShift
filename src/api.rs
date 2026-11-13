@@ -20,21 +20,36 @@ const LISTEN: &str = "127.0.0.1:10082";
 
 #[derive(Default)]
 pub struct Events {
-    snapshot: Mutex<(u64, Option<Value>)>,
-    readings: Mutex<crate::telemetry::Readings>,
+    snapshot: Mutex<Snapshot>,
     changed: Condvar,
+}
+
+#[derive(Default)]
+struct Snapshot {
+    status_revision: u64,
+    status: Option<Value>,
+    readings_revision: u64,
+    readings: crate::telemetry::Readings,
 }
 
 impl Events {
     pub fn publish_readings(&self, readings: &crate::telemetry::Readings) {
-        self.readings.lock().unwrap().clone_from(readings);
+        let mut snapshot = self.snapshot.lock().unwrap();
+        if snapshot.readings != *readings {
+            snapshot.readings.clone_from(readings);
+            snapshot.readings_revision += 1;
+            self.changed.notify_all();
+        }
     }
 
     fn readings(&self) -> Value {
+        Self::format_readings(&self.snapshot.lock().unwrap().readings)
+    }
+
+    fn format_readings(values: &crate::telemetry::Readings) -> Value {
         use crate::plugins::Metric;
-        let values = self.readings.lock().unwrap();
         let reading = |metric, unit, scale| {
-            crate::telemetry::current(metric, &values).map(|(value, age)| {
+            crate::telemetry::current(metric, values).map(|(value, age)| {
                 json!({"value": value * scale, "unit": unit, "age_seconds": age.as_secs()})
             })
         };
@@ -49,9 +64,9 @@ impl Events {
     pub fn publish(&self, status: Option<&thermostat::Status>) {
         let payload = status.map(|status| json!(status));
         let mut snapshot = self.snapshot.lock().unwrap();
-        if snapshot.1 != payload {
-            snapshot.0 += 1;
-            snapshot.1 = payload;
+        if snapshot.status != payload {
+            snapshot.status_revision += 1;
+            snapshot.status = payload;
             self.changed.notify_all();
         }
     }
@@ -163,9 +178,9 @@ fn serve(
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut request = BufReader::new(stream.try_clone()?);
     let (status, response) = handle(&mut request, token, commands, events)?;
-    if status == "event-stream" {
+    if matches!(status, "event-stream" | "telemetry-stream") {
         if let Some(_slot) = subscribers.take() {
-            return stream_events(stream, events);
+            return stream_events(stream, events, status == "telemetry-stream");
         }
         return send_json(
             stream,
@@ -189,28 +204,49 @@ fn send_json(stream: &mut TcpStream, status: &str, response: Value) -> io::Resul
     )
 }
 
-fn stream_events(stream: &mut impl Write, events: &Events) -> io::Result<()> {
+fn stream_events(stream: &mut impl Write, events: &Events, telemetry: bool) -> io::Result<()> {
     stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nretry: 2000\n\n")?;
     let until = Instant::now() + Duration::from_secs(300);
     let mut seen = None;
+    let mut seen_readings = None;
     while Instant::now() < until {
         let snapshot = events.snapshot.lock().unwrap();
         let (snapshot, _) = events
             .changed
             .wait_timeout_while(snapshot, Duration::from_secs(10), |snapshot| {
-                seen == Some(snapshot.0)
+                seen == Some(snapshot.status_revision)
+                    && (!telemetry
+                        || seen_readings
+                            .is_some_and(|(revision, _)| revision == snapshot.readings_revision))
             })
             .unwrap();
-        let (revision, payload) = snapshot.clone();
+        let revision = snapshot.status_revision;
+        let status = (seen != Some(revision)).then(|| snapshot.status.clone());
+        let readings = telemetry.then(|| {
+            let values = Events::format_readings(&snapshot.readings);
+            let available = ["room_temperature", "room_humidity", "electricity", "gas"]
+                .map(|name| !values[name].is_null());
+            ((snapshot.readings_revision, available), values)
+        });
         drop(snapshot);
-        if seen == Some(revision) {
-            stream.write_all(b": keepalive\n\n")?;
-        } else {
+        let mut sent = false;
+        if let Some(payload) = status {
             seen = Some(revision);
             match payload {
                 Some(status) => write!(stream, "event: status\ndata: {status}\n\n")?,
                 None => stream.write_all(b"event: unavailable\ndata: {}\n\n")?,
             }
+            sent = true;
+        }
+        if let Some((key, values)) = readings {
+            if seen_readings != Some(key) {
+                seen_readings = Some(key);
+                write!(stream, "event: telemetry\ndata: {values}\n\n")?;
+                sent = true;
+            }
+        }
+        if !sent {
+            stream.write_all(b": keepalive\n\n")?;
         }
     }
     Ok(())
@@ -305,6 +341,7 @@ fn handle(
             })
         }
         ("GET", "/v1/events") if query.is_empty() => Ok(("event-stream", Value::Null)),
+        ("GET", "/v1/events") if query == "telemetry=1" => Ok(("telemetry-stream", Value::Null)),
         ("GET", "/v1/telemetry") if query.is_empty() => Ok(("200 OK", events.readings())),
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
@@ -563,7 +600,9 @@ mod tests {
             let _ = serve(&mut server, token, &commands, &producer, &subscribers);
         });
         client
-            .write_all(b"GET /v1/events HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n")
+            .write_all(
+                b"GET /v1/events?telemetry=1 HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+            )
             .unwrap();
         let mut reader = BufReader::new(client);
         let mut response = String::new();
@@ -581,5 +620,12 @@ mod tests {
             assert_ne!(reader.read_line(&mut response).unwrap(), 0);
         }
         assert!(response.contains("event: status\ndata: "));
+        events.publish_readings(
+            &[(crate::plugins::Metric::Electricity, (250.0, Instant::now()))].into(),
+        );
+        while !response.contains("\"value\":250.0") {
+            assert_ne!(reader.read_line(&mut response).unwrap(), 0);
+        }
+        assert!(response.contains("event: telemetry\ndata: "));
     }
 }
