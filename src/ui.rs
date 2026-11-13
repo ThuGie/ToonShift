@@ -2184,6 +2184,13 @@ impl Ui {
                     self.text(x + 16, y + 155, "Details", 17, muted, end);
                     self.buttons.push((rect, Action::HeatingDetails));
                 }
+                if interactive && !editing && matches!(plugin.source, Source::MeterArchive) {
+                    if let Some(meter) = plugin.meter {
+                        self.text(x + 16, y + 155, "History", 17, muted, end);
+                        self.buttons
+                            .push((rect, Action::Energy(meter, crate::energy::Period::Day)));
+                    }
+                }
             } else {
                 self.text(x + 16, y + 47, id, 20, muted, end);
                 self.text(x + 16, y + 113, "Unavailable", 23, ink, end);
