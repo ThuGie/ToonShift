@@ -49,6 +49,16 @@ Rotate the token by moving the token file out of the device's application direct
 
 For individual clients, create a private file in `/mnt/data/toon-rust/api-clients/<client-id>` containing `read <secret>` or `control <secret>`. Use a fresh random 32-byte secret encoded as 64 hexadecimal digits and a client ID of up to 40 letters, digits, or hyphens. Set the directory mode to 0700 and the file mode to 0600. The client sends `Authorization: Bearer <client-id>.<secret>`. Read grants can use GET endpoints and receive HTTP 403 for writes. Delete the file to revoke the client. New requests check grants immediately and open event streams check them before each update or keepalive.
 
+### Provisioning API clients over SSH
+
+```sh
+ssh toon '/mnt/data/toon-rust/toon-rust --api-client create home-monitor read'
+ssh toon '/mnt/data/toon-rust/toon-rust --api-client list'
+ssh toon '/mnt/data/toon-rust/toon-rust --api-client revoke home-monitor'
+```
+
+The create command prints the bearer credential once. The list command prints only client IDs and scopes. Use `control` in place of `read` for clients that manage heating.
+
 ## Firmware inventory
 
 The following inventory was gathered over SSH on a Toon 2 running firmware 6.4.5. The local HTTP convention is `http://127.0.0.1:10080/<service>?action=<action>`. The firmware listens on ports 80 and 10080. Behavior, permissions, and route availability vary by image and rooting setup. Some actions use legacy JavaScript-like text instead of strict JSON. Probe with read operations over SSH.

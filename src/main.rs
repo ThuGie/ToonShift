@@ -146,6 +146,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use ui::Action;
 
     let root = Path::new("/mnt/data/toon-rust");
+    if std::env::args().nth(1).as_deref() == Some("--api-client") {
+        api::manage_clients(root, std::env::args().skip(2))?;
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--probe-meter-configuration") {
         return advanced::probe_meter_configuration().map_err(Into::into);
     }

@@ -136,9 +136,7 @@ impl Drop for Slot {
 fn load_token(root: &Path) -> io::Result<String> {
     let path = root.join("api-token");
     if !path.exists() {
-        let mut random = [0u8; 32];
-        File::open("/dev/urandom")?.read_exact(&mut random)?;
-        let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let token = random_token()?;
         let temporary = root.join("api-token.new");
         let mut file = OpenOptions::new()
             .write(true)
@@ -158,6 +156,122 @@ fn load_token(root: &Path) -> io::Result<String> {
         return Err(io::Error::other("Invalid API token"));
     }
     Ok(token)
+}
+
+#[cfg(target_os = "linux")]
+fn random_token() -> io::Result<String> {
+    let mut random = [0u8; 32];
+    File::open("/dev/urandom")?.read_exact(&mut random)?;
+    Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn valid_client_id(id: &str) -> bool {
+    (1..=40).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+#[cfg(target_os = "linux")]
+pub fn manage_clients(root: &Path, mut args: impl Iterator<Item = String>) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let directory = root.join("api-clients");
+    let command = args.next();
+    let id = args.next();
+    let scope = args.next();
+    if args.next().is_some() {
+        return Err(io::Error::other("Unexpected API client argument"));
+    }
+    match (command.as_deref(), id.as_deref(), scope.as_deref()) {
+        (Some("create"), Some(id), Some(scope @ ("read" | "control"))) if valid_client_id(id) => {
+            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            validate_client_directory(&directory)?;
+            let token = random_token()?;
+            let mut file = OpenOptions::new()
+                .mode(0o600)
+                .write(true)
+                .create_new(true)
+                .open(directory.join(id))?;
+            if let Err(error) = writeln!(file, "{scope} {token}").and_then(|_| file.sync_all()) {
+                let _ = fs::remove_file(directory.join(id));
+                return Err(error);
+            }
+            println!("{id}.{token}");
+        }
+        (Some("list"), None, None) => {
+            match validate_client_directory(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error),
+            }
+            let mut clients = Vec::new();
+            for entry in fs::read_dir(&directory)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if let Some(id) = name.to_str().filter(|id| valid_client_id(id)) {
+                    if let Some((grant, _)) = read_client(&entry.path()) {
+                        clients.push(format!(
+                            "{id} {}",
+                            if grant == Grant::Read {
+                                "read"
+                            } else {
+                                "control"
+                            }
+                        ));
+                    }
+                }
+            }
+            clients.sort();
+            for client in clients {
+                println!("{client}");
+            }
+        }
+        (Some("revoke"), Some(id), None) if valid_client_id(id) => {
+            validate_client_directory(&directory)?;
+            fs::remove_file(directory.join(id))?;
+        }
+        _ => {
+            return Err(io::Error::other(
+                "Use --api-client create <id> <read|control>, list, or revoke <id>",
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn validate_client_directory(directory: &std::path::Path) -> io::Result<()> {
+    let info = std::fs::symlink_metadata(directory)?;
+    #[cfg(unix)]
+    let private = info.permissions().mode() & 0o077 == 0;
+    #[cfg(not(unix))]
+    let private = true;
+    if !info.is_dir() || !private {
+        return Err(io::Error::other("API client directory must be private"));
+    }
+    Ok(())
+}
+
+fn read_client(path: &std::path::Path) -> Option<(Grant, String)> {
+    let info = std::fs::symlink_metadata(path).ok()?;
+    if !info.is_file() || info.len() > 128 {
+        return None;
+    }
+    #[cfg(unix)]
+    if info.permissions().mode() & 0o077 != 0 {
+        return None;
+    }
+    let data = std::fs::read_to_string(path).ok()?;
+    let (scope, secret) = data.trim_end().split_once(' ')?;
+    if secret.len() != 64 || !secret.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let grant = match scope {
+        "read" => Grant::Read,
+        "control" => Grant::Control,
+        _ => return None,
+    };
+    Some((grant, secret.into()))
 }
 
 fn equal_secret(left: &[u8], right: &[u8]) -> bool {
@@ -186,37 +300,16 @@ impl Credentials {
             return Some(Grant::Control);
         }
         let (id, secret) = token.split_once('.')?;
-        if !(1..=40).contains(&id.len())
-            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        if !valid_client_id(id)
             || secret.len() != 64
             || !secret.bytes().all(|b| b.is_ascii_hexdigit())
         {
             return None;
         }
         let directory = self.clients.as_ref()?;
-        let path = directory.join(id);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let info = std::fs::symlink_metadata(directory).ok()?;
-            if !info.is_dir() || info.permissions().mode() & 0o077 != 0 {
-                return None;
-            }
-            let info = std::fs::symlink_metadata(&path).ok()?;
-            if !info.is_file() || info.permissions().mode() & 0o077 != 0 || info.len() > 128 {
-                return None;
-            }
-        }
-        let data = std::fs::read_to_string(path).ok()?;
-        let (scope, expected) = data.trim_end().split_once(' ')?;
-        if !equal_secret(secret.as_bytes(), expected.as_bytes()) {
-            return None;
-        }
-        match scope {
-            "read" => Some(Grant::Read),
-            "control" => Some(Grant::Control),
-            _ => None,
-        }
+        validate_client_directory(directory).ok()?;
+        let (grant, expected) = read_client(&directory.join(id))?;
+        equal_secret(secret.as_bytes(), expected.as_bytes()).then_some(grant)
     }
 }
 
