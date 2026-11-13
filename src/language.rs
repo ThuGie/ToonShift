@@ -17,6 +17,12 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Hold indefinitely" => "Vasthouden",
+            "Until next period" => "Tot volgende periode",
+            "Hold until next period · Resume schedule" => {
+                "Tot volgende periode · Programma hervatten"
+            }
+            "Indefinite hold · Resume schedule" => "Vastgehouden · Programma hervatten",
             "Z-Wave inventory unavailable" => "Z-Wave-apparatenlijst niet beschikbaar",
             "Catalog sources" => "Catalogusbronnen",
             "Remove catalog source?" => "Catalogusbron verwijderen?",

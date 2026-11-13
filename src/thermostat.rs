@@ -10,6 +10,8 @@ pub struct Status {
     pub current_temp: String,
     pub current_setpoint: String,
     pub program_state: String,
+    #[serde(default)]
+    pub active_state: String,
     pub burner_info: String,
     pub connection: String,
     pub next_setpoint: String,
@@ -175,6 +177,23 @@ pub enum Command {
     Presets,
     SavePreset(crate::presets::Preset),
     ApplyPreset(u8),
+    HoldPreset(u8, HoldMode),
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldMode {
+    UntilNextPeriod,
+    Indefinite,
+}
+
+impl HoldMode {
+    fn scheme(self) -> u8 {
+        match self {
+            Self::UntilNextPeriod => 2,
+            Self::Indefinite => 8,
+        }
+    }
 }
 
 pub struct Work {
@@ -272,22 +291,31 @@ fn apply(command: Command) -> Result<(), String> {
         }
         Command::Setpoint(_) => return Err("Setpoint must be between 6 and 30°C".into()),
         Command::Program(enabled) => {
-            format!("action=changeSchemeState&state={}", u8::from(enabled))
+            let current = status()?;
+            let preset = current
+                .active_state
+                .parse::<u8>()
+                .ok()
+                .filter(|id| *id < 4)
+                .unwrap_or(1);
+            return set_scheme(u8::from(enabled), preset);
         }
-        Command::ApplyPreset(4) => "action=changeSchemeState&state=8&temperatureState=4".into(),
+        Command::ApplyPreset(4) => return set_scheme(8, 4),
         Command::ApplyPreset(preset) if preset < 4 => {
-            if status()?.program_state == "0" {
-                let temperature = crate::presets::load()?
-                    .into_iter()
-                    .find(|row| row.id == preset)
-                    .ok_or("Preset is unavailable")?
-                    .temperature;
-                format!("action=setSetpoint&Setpoint={temperature}")
-            } else {
-                format!("action=changeSchemeState&state=2&temperatureState={preset}")
-            }
+            let current = status()?;
+            let mode = if current.program_state == "0" { 0 } else { 2 };
+            return set_scheme(mode, preset);
         }
-        Command::ApplyPreset(_) => return Err("Invalid preset".into()),
+        Command::HoldPreset(preset, mode) if preset < 4 => {
+            if matches!(mode, HoldMode::UntilNextPeriod) {
+                let current = status()?;
+                if current.next_time.parse::<u64>().unwrap_or_default() == 0 {
+                    return Err("Enable a weekly schedule with a next period first".into());
+                }
+            }
+            return set_scheme(mode.scheme(), preset);
+        }
+        Command::ApplyPreset(_) | Command::HoldPreset(_, _) => return Err("Invalid preset".into()),
         Command::Schedule
         | Command::EditSchedule(_)
         | Command::EditScheduleAt(_, _)
@@ -295,6 +323,24 @@ fn apply(command: Command) -> Result<(), String> {
         | Command::SavePreset(_) => return Ok(()),
     };
     request(&query)?;
+    Ok(())
+}
+
+fn set_scheme(mode: u8, preset: u8) -> Result<(), String> {
+    request(&format!(
+        "action=changeSchemeState&state={mode}&temperatureState={preset}"
+    ))?;
+    let effective = status()?;
+    if effective.program_state.parse::<u8>().ok() != Some(mode)
+        || (mode != 1
+            && effective
+                .active_state
+                .parse::<u8>()
+                .ok()
+                .is_some_and(|id| id != preset))
+    {
+        return Err("Thermostat did not confirm the requested heating mode".into());
+    }
     Ok(())
 }
 
@@ -332,9 +378,10 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
             let reply = work.take().and_then(|work| work.reply);
             let completed = heat.is_some() && reply.is_none();
             if let Some(reply) = reply {
-                let response = match &schedule {
-                    Some(schedule) => schedule.as_ref().map(|_| ()).map_err(Clone::clone),
-                    None => result.clone().map(|_| ()),
+                let response = match (&schedule, &presets) {
+                    (Some(schedule), _) => schedule.as_ref().map(|_| ()).map_err(Clone::clone),
+                    (_, Some(presets)) => presets.as_ref().map(|_| ()).map_err(Clone::clone),
+                    _ => result.clone().map(|_| ()),
                 };
                 let _ = reply.send(response);
             }

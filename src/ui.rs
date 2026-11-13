@@ -1502,20 +1502,48 @@ impl Ui {
                         567,
                     );
                     self.button(
-                        Rect(624, y, 143, 51),
+                        Rect(480, y, 122, 51),
                         "Edit",
                         p,
                         false,
                         Action::EditPreset(*preset),
                     );
                     if !view.pending {
+                        let until_next = preset.id < 4
+                            && view.status.is_some_and(|status| {
+                                matches!(status.program_state.as_str(), "1" | "2")
+                                    && status.next_time.parse::<u64>().is_ok_and(|time| time > 0)
+                            });
                         self.button(
-                            Rect(799, y, 167, 51),
-                            "Use preset",
+                            Rect(618, y, 165, 51),
+                            if until_next {
+                                "Until next period"
+                            } else {
+                                "Use preset"
+                            },
                             p,
                             true,
-                            Action::Heat(Command::ApplyPreset(preset.id)),
+                            Action::Heat(if until_next {
+                                Command::HoldPreset(
+                                    preset.id,
+                                    crate::thermostat::HoldMode::UntilNextPeriod,
+                                )
+                            } else {
+                                Command::ApplyPreset(preset.id)
+                            }),
                         );
+                        if preset.id < 4 {
+                            self.button(
+                                Rect(799, y, 167, 51),
+                                "Hold indefinitely",
+                                p,
+                                false,
+                                Action::Heat(Command::HoldPreset(
+                                    preset.id,
+                                    crate::thermostat::HoldMode::Indefinite,
+                                )),
+                            );
+                        }
                     }
                 }
             }
@@ -1600,19 +1628,21 @@ impl Ui {
                 false,
                 Action::Heat(Command::Adjust(50)),
             );
-            let scheduled = view
+            let mode = view
                 .status
-                .is_some_and(|s| matches!(s.program_state.as_str(), "1" | "2"));
+                .map_or("", |status| status.program_state.as_str());
+            let (label, enabled) = match mode {
+                "1" => ("Schedule on", true),
+                "2" => ("Hold until next period · Resume schedule", false),
+                "8" => ("Indefinite hold · Resume schedule", false),
+                _ => ("Schedule off", false),
+            };
             self.button(
                 Rect(62, 462, 472, 60),
-                if scheduled {
-                    "Schedule on"
-                } else {
-                    "Schedule off"
-                },
+                label,
                 p,
-                scheduled,
-                Action::Heat(Command::Program(!scheduled)),
+                enabled,
+                Action::Heat(Command::Program(!enabled)),
             );
         } else {
             self.text(

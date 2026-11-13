@@ -29,7 +29,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | statusUsage | `happ_pwrusage`, `hcb_rrd` | Totals, data gaps, and local cost estimates implemented. Estimate input uses the normal and low electricity counters separately and the recorded gas total. Verify rate persistence and live readings on-device. |
 | strvSettings | Smart radiator valves and HVAC | Identify commissioning flow, then verify real valve operation. |
 | systemSettings | Firmware config, watchdog, boot | Stock fallback exercised. Update state, export, and separate preference/factory reset flows remain. |
-| thermostat | `happ_thermstat` | Setpoint changes previously verified. HTTP and BoxTalk temperatures matched. Timed hold, faults, and reboot evidence remain. |
+| thermostat | `happ_thermstat` | Setpoint changes previously verified. HTTP and BoxTalk temperatures matched. Preset holds until the next period and indefinitely are implemented with mode read-back. Verify live transitions and add custom-end holds. Fault and reboot evidence remain. |
 | thermostatSettings | Program, states, calibration | Revision-checked schedule write and restore verified. Copy-day has host coverage. Preset writes, vacation, and calibration remain. |
 | upsell | Tenant/legacy service | Determine active role and document any local equivalent. |
 | weather | Versioned Weather plugin | Weather 1.2 runs forecast and geocoding mapping in Rust WebAssembly. Both operations passed host fixture checks. The earlier release returned live conditions and five forecast days on-device. Verify Weather 1.2 with live data and add radar. |

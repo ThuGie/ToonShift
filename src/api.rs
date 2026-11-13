@@ -349,6 +349,18 @@ fn handle(
                 },
             )
         }
+        ("PUT", "/v1/hold") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Hold {
+                preset: u8,
+                mode: thermostat::HoldMode,
+            }
+            Ok(match serde_json::from_slice::<Hold>(&body) {
+                Ok(hold) if hold.preset < 4 => submit(commands, Command::HoldPreset(hold.preset, hold.mode)),
+                _ => ("422 Unprocessable Content", json!({"error":"Invalid hold mode or preset"})),
+            })
+        }
         ("PUT", "/v1/setpoint") => {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
