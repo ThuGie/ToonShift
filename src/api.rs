@@ -344,6 +344,7 @@ fn handle(
             })))
         }
         ("GET", "/v1/diagnostics") => Ok(read_result(thermostat::diagnostics())),
+        ("GET", "/v1/heating/history") => Ok(read_result(thermostat::history())),
         ("GET", "/v1/version") => Ok(("200 OK", json!({
             "toonshift": env!("CARGO_PKG_VERSION"),
             "firmware": thermostat::firmware_version().ok(),

@@ -26,6 +26,7 @@ pub struct Status {
     pub error_found: String,
 }
 
+#[derive(serde::Serialize)]
 pub struct History {
     pub room: Vec<Option<f64>>,
     pub target: Vec<Option<f64>>,
@@ -136,6 +137,12 @@ pub fn export_diagnostics(root: &std::path::Path) -> std::io::Result<()> {
 
 pub fn history() -> Result<History, String> {
     let response = firmware_get("happ_thermstat", "action=getHeatingHistory")?;
+    let mut history = parse_history(&response)?;
+    history.diagnostics = diagnostics().ok();
+    Ok(history)
+}
+
+fn parse_history(response: &str) -> Result<History, String> {
     let series = |name: &str| -> Result<&str, String> {
         let marker = format!("{name}:[");
         let (_, body) = response
@@ -147,10 +154,10 @@ pub fn history() -> Result<History, String> {
         Ok(series)
     };
     let parse = |name: &str| -> Result<Vec<Option<f64>>, String> {
-        Ok(series(name)?
-            .split(',')
-            .filter(|value| !value.trim().is_empty())
-            .take(1024)
+        let values = series(name)?.trim();
+        Ok(values
+            .split_terminator(',')
+            .take(if values.is_empty() { 0 } else { 1024 })
             .map(|value| {
                 value.trim().parse::<f64>().ok().filter(|value| {
                     value.is_finite() && (0.0..=60.0).contains(value) && *value != 0.0
@@ -175,10 +182,26 @@ pub fn history() -> Result<History, String> {
         raw_room: parse("uncorrectedRoomtemps")
             .ok()
             .and_then(|values| values.into_iter().flatten().last()),
-        diagnostics: diagnostics().ok(),
+        diagnostics: None,
         boiler_flow: water_temperature("boilerTemps"),
         boiler_return: water_temperature("boilerRetTemps"),
     })
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn history_keeps_missing_sample_positions() {
+        let history = parse_history(
+            "{roomTemps:[20,,NaN,21,],setpoints:[19,20,20,21],boilerTemps:[35,0],boilerRetTemps:[29,30]}",
+        ).unwrap();
+        assert_eq!(history.room, [Some(20.0), None, None, Some(21.0)]);
+        assert_eq!(history.boiler_flow, None);
+        assert_eq!(history.boiler_return, Some(30.0));
+        assert!(parse_history("{roomTemps:[20").is_err());
+    }
 }
 
 impl Status {
