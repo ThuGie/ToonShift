@@ -87,6 +87,8 @@ pub enum Action {
     Brightness(bool, i8),
     AppearanceHour(bool, i8),
     IdleMinutes(u8),
+    IdleDashboard(Option<usize>),
+    WideTiles(bool),
     OpenPlugin(usize),
     PluginSettings,
     PluginPlace(usize, usize),
@@ -634,6 +636,7 @@ impl Ui {
         from: (usize, usize),
         to: (usize, usize),
         tiles: usize,
+        tiles_per_page: usize,
     ) -> Option<Action> {
         let dx = from.0.abs_diff(to.0);
         let dy = from.1.abs_diff(to.1);
@@ -663,8 +666,8 @@ impl Ui {
                 } else {
                     return None;
                 };
-                let destination = page * 4 + (source % 4);
-                if page * 4 >= tiles {
+                let destination = page * tiles_per_page + (source % tiles_per_page);
+                if page * tiles_per_page >= tiles {
                     return None;
                 }
                 self.dashboard_page = page;
@@ -675,7 +678,7 @@ impl Ui {
         }
         if dx > 100 && dx > dy * 2 {
             self.dashboard_page = if from.0 > to.0 {
-                (self.dashboard_page + 1).min(tiles.div_ceil(4).saturating_sub(1))
+                (self.dashboard_page + 1).min(tiles.div_ceil(tiles_per_page).saturating_sub(1))
             } else {
                 self.dashboard_page.saturating_sub(1)
             };
@@ -762,7 +765,11 @@ impl Ui {
                 p.muted,
                 950,
             );
-            self.text(76, 432, "Tap to wake", 23, p.muted, 955);
+            self.text(76, 432, "Tap to wake", 23, p.muted, 545);
+            if let Some(page) = view.settings.idle_dashboard_page {
+                let last = view.settings.dashboard_pages().saturating_sub(1);
+                self.dashboard_tiles(view, &p, page.min(last), false);
+            }
             return;
         }
         if self.mark.is_empty() {
@@ -1602,20 +1609,31 @@ impl Ui {
             );
         }
 
-        let installed = &view.settings.installed;
-        let pages = installed.len().div_ceil(4).max(1);
+        let pages = view.settings.dashboard_pages().max(1);
         self.dashboard_page = self.dashboard_page.min(pages - 1);
-        for (slot, (index, id)) in installed
+        self.dashboard_tiles(view, p, self.dashboard_page, true);
+        self.dashboard_controls(view, p, pages);
+    }
+
+    fn dashboard_tiles(&mut self, view: &View<'_>, p: &Palette, page: usize, interactive: bool) {
+        let editing = interactive && self.editing;
+        let count = view.settings.tiles_per_page();
+        let columns = count / 2;
+        let width = (408 - (columns - 1) * 12) / columns;
+        for (slot, (index, id)) in view
+            .settings
+            .installed
             .iter()
             .enumerate()
-            .skip(self.dashboard_page * 4)
-            .take(4)
+            .skip(page * count)
+            .take(count)
             .enumerate()
         {
-            let x = 584 + (slot % 2) * 210;
-            let y = 100 + (slot / 2) * 203;
-            let rect = Rect(x, y, 198, 192);
-            let selected = self.editing && self.selected_tile == Some(index);
+            let x = 584 + (slot % columns) * 210;
+            let y = 100 + (slot / columns) * 203;
+            let rect = Rect(x, y, width, 192);
+            let end = x + width - 16;
+            let selected = editing && self.selected_tile == Some(index);
             let (fill, ink, muted) = if selected {
                 (p.accent, p.on_accent, p.on_accent)
             } else {
@@ -1628,40 +1646,32 @@ impl Ui {
                 .enumerate()
                 .find(|(_, plugin)| &plugin.id == id)
             {
-                self.raw_text(
-                    x + 16,
-                    y + 47,
-                    plugin.title(self.language),
-                    21,
-                    muted,
-                    x + 182,
-                );
-                self.text(
-                    x + 16,
-                    y + 113,
-                    &plugin_value(plugin, view),
-                    25,
-                    ink,
-                    x + 182,
-                );
-                if !self.editing && matches!(plugin.source, Source::HttpsJson) {
+                self.raw_text(x + 16, y + 47, plugin.title(self.language), 21, muted, end);
+                self.text(x + 16, y + 113, &plugin_value(plugin, view), 25, ink, end);
+                if !editing && matches!(plugin.source, Source::HttpsJson) {
                     let detail = crate::feed::place(plugin, view.settings)
                         .map_or("", |place| place.name.as_str());
-                    self.raw_text(x + 16, y + 155, detail, 17, muted, x + 182);
-                    self.buttons.push((rect, Action::OpenPlugin(plugin_index)));
+                    self.raw_text(x + 16, y + 155, detail, 17, muted, end);
+                    if interactive {
+                        self.buttons.push((rect, Action::OpenPlugin(plugin_index)));
+                    }
                 }
-                if !self.editing && matches!(plugin.source, Source::Boiler) {
-                    self.text(x + 16, y + 155, "Details", 17, muted, x + 182);
+                if interactive && !editing && matches!(plugin.source, Source::Boiler) {
+                    self.text(x + 16, y + 155, "Details", 17, muted, end);
                     self.buttons.push((rect, Action::HeatingDetails));
                 }
             } else {
-                self.text(x + 16, y + 47, id, 20, muted, x + 182);
-                self.text(x + 16, y + 113, "Unavailable", 23, ink, x + 182);
+                self.text(x + 16, y + 47, id, 20, muted, end);
+                self.text(x + 16, y + 113, "Unavailable", 23, ink, end);
             }
-            if self.editing {
+            if editing {
                 self.buttons.push((rect, Action::Tile(index)));
             }
         }
+    }
+
+    fn dashboard_controls(&mut self, view: &View<'_>, p: &Palette, pages: usize) {
+        let installed = &view.settings.installed;
         if installed.is_empty() {
             self.button(
                 Rect(584, 100, 408, 78),
@@ -2390,19 +2400,60 @@ impl Ui {
                 Action::AppearanceHour(night, 1),
             );
         }
-        self.text(56, 428, "Idle display after", 23, p.muted, 960);
+        self.text(56, 419, "Idle display after", 20, p.muted, 960);
         for (index, (label, minutes)) in [("Never", 0), ("1 min", 1), ("5 min", 5), ("15 min", 15)]
             .into_iter()
             .enumerate()
         {
             self.button(
-                Rect(56 + index * 230, 449, 207, 55),
+                Rect(56 + index * 230, 431, 207, 45),
                 label,
                 p,
                 minutes == view.settings.idle_minutes,
                 Action::IdleMinutes(minutes),
             );
         }
+        let pages = view.settings.dashboard_pages();
+        let selected = view
+            .settings
+            .idle_dashboard_page
+            .filter(|page| *page < pages);
+        self.text(56, 519, "Idle content", 20, p.muted, 300);
+        self.button(
+            Rect(300, 487, 175, 45),
+            "Clock",
+            p,
+            selected.is_none(),
+            Action::IdleDashboard(None),
+        );
+        if pages > 0 {
+            let next = selected.map_or(0, |page| (page + 1) % pages);
+            let label = selected.map_or_else(
+                || self.language.translate("Show dashboard").to_owned(),
+                |page| {
+                    format!(
+                        "{} {} / {}",
+                        self.language.translate("Dashboard page"),
+                        page + 1,
+                        pages
+                    )
+                },
+            );
+            self.button(
+                Rect(488, 487, 270, 45),
+                &label,
+                p,
+                selected.is_some(),
+                Action::IdleDashboard(Some(next)),
+            );
+        }
+        self.button(
+            Rect(773, 487, 180, 45),
+            "Wide tiles",
+            p,
+            view.settings.wide_tiles,
+            Action::WideTiles(!view.settings.wide_tiles),
+        );
     }
 }
 
@@ -2416,18 +2467,37 @@ mod dashboard_tests {
         ui.editing = true;
         ui.buttons.push((Rect(794, 303, 198, 192), Action::Tile(3)));
         assert!(matches!(
-            ui.gesture((870, 390), (1015, 390), 5),
+            ui.gesture((870, 390), (1015, 390), 5, 4),
             Some(Action::MoveTile(3, 4))
         ));
         assert_eq!(ui.dashboard_page, 1);
         ui.buttons.clear();
         ui.buttons.push((Rect(584, 100, 198, 192), Action::Tile(4)));
-        assert!(ui.gesture((645, 150), (1015, 150), 5).is_none());
+        assert!(ui.gesture((645, 150), (1015, 150), 5, 4).is_none());
         assert!(matches!(
-            ui.gesture((645, 150), (570, 150), 5),
+            ui.gesture((645, 150), (570, 150), 5, 4),
             Some(Action::MoveTile(4, 0))
         ));
         assert_eq!(ui.dashboard_page, 0);
+    }
+
+    #[test]
+    fn wide_tile_pages_accept_old_names_and_use_two_slots() {
+        let mut settings: crate::plugins::Settings = serde_json::from_str(
+            r#"{"dashboard_names":["Energy","","","","","","",""],"installed":["clock","boiler","power"]}"#,
+        ).unwrap();
+        assert_eq!(settings.dashboard_pages(), 1);
+        assert_eq!(settings.dashboard_names[0], "Energy");
+        assert_eq!(settings.idle_dashboard_page, None);
+        settings.wide_tiles = true;
+        assert_eq!(settings.dashboard_pages(), 2);
+        let mut ui = Ui::new();
+        ui.editing = true;
+        ui.buttons.push((Rect(584, 303, 408, 192), Action::Tile(1)));
+        assert!(matches!(
+            ui.gesture((880, 380), (1015, 380), 3, settings.tiles_per_page()),
+            Some(Action::MoveTile(1, 2))
+        ));
     }
 }
 

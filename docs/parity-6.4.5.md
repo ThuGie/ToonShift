@@ -18,7 +18,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | graph | `hcb_rrd` | Electricity and gas daily charts returned readings on the reference unit. Validate live units and timestamps with an active meter. |
 | heatRecovery | `happ_hvac`, configured VHR | Reference unit reported no VHR. Verify on a configured unit. |
 | heatingOverview | Thermostat and history | Boiler details and history implemented. Verify real demand, fault recovery, and adapter data. |
-| homescreen | Local GUI | Persistent tiles, page names, tap-to-move, edge drag, duplication, and confirmed layout reset implemented. Host test covers edge drag into a partial page and back. Touchscreen verification, tile sizing, and idle dashboard remain. |
+| homescreen | Local GUI | Persistent tiles, page names, tap-to-move, edge drag, duplication, confirmed layout reset, compact and wide tile layouts, and a selectable idle dashboard page implemented. Host tests cover partial-page edge drag and previous settings compatibility. Touchscreen verification and per-tile sizing remain. |
 | imageViewer | Local image storage and decode | Map stock formats and browsing flow. Add a bounded local viewer if active. |
 | inbox | `happ_usermsg` | Map notification dataset and implement list, read state, and dismissal. |
 | installWizard | Stock wizard and config objects | Map steps and dependencies before implementing first-run and commissioning. |

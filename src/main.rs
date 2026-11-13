@@ -522,7 +522,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut next = settings.clone();
         let mut persist = true;
-        let action = ui.gesture(gesture.from, gesture.to, settings.installed.len());
+        let action = ui.gesture(
+            gesture.from,
+            gesture.to,
+            settings.installed.len(),
+            settings.tiles_per_page(),
+        );
         match action {
             Some(Action::MeterSource(metric, index)) => {
                 if let Some(channel) = hardware
@@ -605,6 +610,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
             }
             Some(Action::IdleMinutes(minutes)) => next.idle_minutes = minutes,
+            Some(Action::IdleDashboard(page)) => next.idle_dashboard_page = page,
+            Some(Action::WideTiles(wide)) => {
+                next.wide_tiles = wide;
+                next.idle_dashboard_page = next
+                    .idle_dashboard_page
+                    .map(|page| page.min(next.dashboard_pages().saturating_sub(1)));
+            }
             Some(Action::PluginPlace(plugin, place)) => {
                 if let Some(location) = catalog
                     .get(plugin)
@@ -720,15 +732,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(Action::ResetDashboard) => {
                 next.installed = plugins::Settings::default().installed;
-                next.dashboard_names = Default::default();
+                next.dashboard_names = plugins::Settings::default().dashboard_names;
+                next.wide_tiles = false;
+                next.idle_dashboard_page = None;
             }
             Some(Action::NameDashboard(page)) => {
-                if let Some(name) = settings.dashboard_names.get(page) {
-                    ui.edit_dashboard_name(name);
-                }
+                ui.edit_dashboard_name(
+                    settings
+                        .dashboard_names
+                        .get(page)
+                        .map_or("", String::as_str),
+                );
                 persist = false;
             }
             Some(Action::SaveDashboardName(page)) => {
+                next.dashboard_names.resize(16, String::new());
                 if let Some((slot, name)) =
                     next.dashboard_names.get_mut(page).zip(ui.dashboard_name())
                 {

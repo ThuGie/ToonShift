@@ -483,7 +483,8 @@ pub struct Settings {
     pub theme: Theme,
     pub appearance: Appearance,
     pub installed: Vec<String>,
-    pub dashboard_names: [String; 8],
+    pub dashboard_names: Vec<String>,
+    pub wide_tiles: bool,
     pub locations: std::collections::HashMap<String, String>,
     pub custom_locations: std::collections::HashMap<String, Place>,
     pub language: crate::language::Language,
@@ -492,6 +493,7 @@ pub struct Settings {
     pub day_brightness: u8,
     pub night_brightness: u8,
     pub idle_minutes: u8,
+    pub idle_dashboard_page: Option<usize>,
 }
 
 impl Default for Settings {
@@ -502,7 +504,8 @@ impl Default for Settings {
             energy_rates: Default::default(),
             appearance: Appearance::Auto,
             installed: vec!["clock".into(), "boiler".into()],
-            dashboard_names: Default::default(),
+            dashboard_names: vec![String::new(); 16],
+            wide_tiles: false,
             locations: Default::default(),
             custom_locations: Default::default(),
             language: Default::default(),
@@ -511,11 +514,24 @@ impl Default for Settings {
             day_brightness: 95,
             night_brightness: 30,
             idle_minutes: 0,
+            idle_dashboard_page: None,
         }
     }
 }
 
 impl Settings {
+    pub fn tiles_per_page(&self) -> usize {
+        if self.wide_tiles {
+            2
+        } else {
+            4
+        }
+    }
+
+    pub fn dashboard_pages(&self) -> usize {
+        self.installed.len().div_ceil(self.tiles_per_page())
+    }
+
     pub fn daylight(&self, hour: u8) -> bool {
         match self.appearance {
             Appearance::Day => true,
