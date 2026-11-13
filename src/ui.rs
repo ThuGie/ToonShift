@@ -2589,7 +2589,25 @@ impl Ui {
                 return;
             }
         };
-        self.text(56, 283, "Recent temperature history", 21, p.text, 650);
+        self.text(56, 283, "Recent temperature history", 21, p.text, 405);
+        let format_water =
+            |value: Option<f64>| value.map_or_else(|| "—".into(), |value| format!("{value:.1}°C"));
+        if history.boiler_flow.is_some() || history.boiler_return.is_some() {
+            let flow = self.language.translate("Recorded flow");
+            let return_label = self.language.translate("Return");
+            self.raw_text(
+                427,
+                283,
+                &format!(
+                    "{flow} {} · {return_label} {}",
+                    format_water(history.boiler_flow),
+                    format_water(history.boiler_return)
+                ),
+                17,
+                p.muted,
+                960,
+            );
+        }
         if let Some(diagnostics) = &history.diagnostics {
             let offset = diagnostics
                 .calibration_offset_celsius
@@ -2608,7 +2626,7 @@ impl Ui {
         }
         if let Some(raw) = history.raw_room {
             let label = self.language.translate("Last raw sensor");
-            self.text(651, 283, &format!("{label} {raw:.1}°C"), 17, p.muted, 960);
+            self.text(630, 528, &format!("{label} {raw:.1}°C"), 17, p.muted, 960);
         }
         let all = || {
             history

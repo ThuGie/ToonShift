@@ -31,6 +31,8 @@ pub struct History {
     pub target: Vec<Option<f64>>,
     pub raw_room: Option<f64>,
     pub diagnostics: Option<Diagnostics>,
+    pub boiler_flow: Option<f64>,
+    pub boiler_return: Option<f64>,
 }
 
 #[derive(serde::Serialize)]
@@ -134,7 +136,7 @@ pub fn export_diagnostics(root: &std::path::Path) -> std::io::Result<()> {
 
 pub fn history() -> Result<History, String> {
     let response = firmware_get("happ_thermstat", "action=getHeatingHistory")?;
-    let parse = |name: &str| -> Result<Vec<Option<f64>>, String> {
+    let series = |name: &str| -> Result<&str, String> {
         let marker = format!("{name}:[");
         let (_, body) = response
             .split_once(&marker)
@@ -142,7 +144,10 @@ pub fn history() -> Result<History, String> {
         let (series, _) = body
             .split_once(']')
             .ok_or("Incomplete temperature series")?;
-        Ok(series
+        Ok(series)
+    };
+    let parse = |name: &str| -> Result<Vec<Option<f64>>, String> {
+        Ok(series(name)?
             .split(',')
             .filter(|value| !value.trim().is_empty())
             .take(1024)
@@ -153,6 +158,17 @@ pub fn history() -> Result<History, String> {
             })
             .collect())
     };
+    let water_temperature = |name| {
+        series(name).ok().and_then(|series| {
+            series
+                .trim()
+                .trim_end_matches(',')
+                .rsplit(',')
+                .next()
+                .and_then(|value| value.trim().parse::<f64>().ok())
+                .filter(|value| *value > 0.0 && *value <= 120.0)
+        })
+    };
     Ok(History {
         room: parse("roomTemps")?,
         target: parse("setpoints")?,
@@ -160,6 +176,8 @@ pub fn history() -> Result<History, String> {
             .ok()
             .and_then(|values| values.into_iter().flatten().last()),
         diagnostics: diagnostics().ok(),
+        boiler_flow: water_temperature("boilerTemps"),
+        boiler_return: water_temperature("boilerRetTemps"),
     })
 }
 

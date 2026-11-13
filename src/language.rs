@@ -17,6 +17,8 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Recorded flow" => "Gemeten aanvoer",
+            "Return" => "Retour",
             "Heating fault" => "Verwarmingsstoring",
             "Heating fault · OpenTherm error" => "Verwarmingsstoring · OpenTherm-fout",
             "Boiler link unknown" => "Ketelverbinding onbekend",

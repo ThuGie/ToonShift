@@ -59,7 +59,7 @@ The following inventory was gathered over SSH on a Toon 2 running firmware 6.4.5
 | `getSchemeState` | Verified legacy response shaped like `{schemeState:'0'}` |
 | `getWeeklyList` | Verified legacy schedule list with `targetState`, `weekDay`, `startTimeT`, `endTimeT`. Times are Unix seconds. Weekday 0 corresponds to Sunday on the reference device |
 | `getActiveNext` | Verified legacy response with active and next program, setpoint, preset, and time bounds |
-| `getHeatingHistory` | Verified legacy arrays `setpoints` and `roomTemps`. Timestamp and sampling semantics need verification |
+| `getHeatingHistory` | Verified legacy arrays `setpoints` and `roomTemps`. The firmware handler also emits `boilerTemps` and `boilerRetTemps`, which ToonShift reads for the last recorded flow and return temperatures. Verify units and sampling order on a connected appliance |
 | `getVHRInfo` | Handler responded that no ventilation device was found |
 
 Program states 0, 1, and 2 represent manual, active schedule, and temporary override. Burner states 0–3 represent idle, room heating, hot water, and preheating. The reference device reported no boiler connection during testing. [Rooted Toon climate integration](https://github.com/cyberjunky/home-assistant-toon_climate)
