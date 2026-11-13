@@ -95,6 +95,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         readings: &Default::default(),
         telemetry: &Default::default(),
         energy: None,
+        diagnostics_message: None,
         history: None,
         ambient: false,
         location_results: None,
@@ -264,6 +265,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (join_sender, join_receiver) = std::sync::mpsc::channel();
     let mut joining = false;
     let mut network_message = None;
+    let (diagnostics_sender, diagnostics_receiver) = std::sync::mpsc::channel();
+    let mut exporting_diagnostics = false;
+    let mut diagnostics_message = None;
     let (catalog_sender, catalog_receiver) = std::sync::mpsc::channel();
     let mut catalog_busy = false;
     let mut catalog_message = None;
@@ -422,6 +426,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             });
             dirty = true;
         }
+        if let Ok(result) = diagnostics_receiver.try_recv() {
+            exporting_diagnostics = false;
+            diagnostics_message = Some(match result {
+                Ok(()) => "Saved diagnostics.json in the ToonShift data directory.",
+                Err(_) => "Could not save diagnostics.json.",
+            });
+            dirty = true;
+        }
         for update in updates.try_iter() {
             let new_clock = device::time();
             dirty |= status != update.status
@@ -481,6 +493,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 readings: &readings,
                 telemetry: &telemetry,
                 energy: energy_chart.as_ref(),
+                diagnostics_message,
                 history: heating_history.as_ref(),
                 ambient,
                 location_results: location_results.as_ref(),
@@ -503,7 +516,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut next = settings.clone();
         let mut persist = true;
-        match ui.gesture(gesture.from, gesture.to, settings.installed.len()) {
+        let action = ui.gesture(gesture.from, gesture.to, settings.installed.len());
+        match action {
             Some(Action::MeterSource(metric, index)) => {
                 if let Some(channel) = hardware
                     .devices
@@ -543,6 +557,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::Theme(theme)) => next.theme = theme,
             Some(Action::Appearance(appearance)) => next.appearance = appearance,
             Some(Action::Language(language)) => next.language = language,
+            Some(Action::ExportDiagnostics) => {
+                if !exporting_diagnostics {
+                    exporting_diagnostics = true;
+                    diagnostics_message = Some("Exporting diagnostics…");
+                    let sender = diagnostics_sender.clone();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(thermostat::export_diagnostics(root));
+                    });
+                }
+                persist = false;
+            }
+            Some(Action::SaveEnergyRate(rate)) => match ui.energy_rate_input() {
+                Some(input) => {
+                    if let Err(message) = rate.save(&mut next.energy_rates, input) {
+                        ui.show_energy_rate_error(message);
+                        persist = false;
+                    }
+                }
+                None => persist = false,
+            },
             Some(Action::Brightness(night, offset)) => {
                 let brightness = if night {
                     &mut next.night_brightness
@@ -789,6 +823,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(()) => {
                     settings = next;
                     error = None;
+                    if matches!(action, Some(Action::SaveEnergyRate(_))) {
+                        ui.close_energy_rate();
+                    }
                 }
                 Err(err) => error = Some(format!("Could not save settings: {err}")),
             }

@@ -30,6 +30,7 @@ enum Page {
     Plugin,
     Presets,
     Energy,
+    EnergyRates,
     HeatingDetails,
     Display,
     Advanced,
@@ -77,6 +78,10 @@ pub enum Action {
     SavePreset(crate::presets::Preset),
     Language(crate::language::Language),
     Energy(crate::energy::Meter, crate::energy::Period),
+    EnergyRates,
+    EditEnergyRate(crate::energy::Rate, Option<u32>),
+    SaveEnergyRate(crate::energy::Rate),
+    ExportDiagnostics,
     HeatingDetails,
     Display,
     Brightness(bool, i8),
@@ -155,6 +160,8 @@ pub struct Ui {
     location_search: bool,
     preset_editor: Option<crate::presets::Preset>,
     energy: (crate::energy::Meter, crate::energy::Period),
+    energy_rate: Option<crate::energy::Rate>,
+    energy_rate_error: Option<&'static str>,
     language: crate::language::Language,
     mark: Vec<u32>,
     dashboard_page: usize,
@@ -192,6 +199,8 @@ impl Ui {
                 crate::energy::Meter::Electricity,
                 crate::energy::Period::Day,
             ),
+            energy_rate: None,
+            energy_rate_error: None,
             language: Default::default(),
             mark: Vec::new(),
             dashboard_page: 0,
@@ -393,6 +402,21 @@ impl Ui {
             self.repository = None;
         }
         match action {
+            Action::EnergyRates => {
+                self.page = Page::EnergyRates;
+                self.close_energy_rate();
+            }
+            Action::EditEnergyRate(rate, value) => {
+                self.energy_rate = Some(rate);
+                self.energy_rate_error = None;
+                self.repository = Some(TextEntry {
+                    text: value.map_or_else(String::new, |value| {
+                        format!("{}.{:03}", value / 1000, value % 1000)
+                    }),
+                    ..TextEntry::default()
+                });
+            }
+            Action::SaveEnergyRate(_) => return Some(action),
             Action::LocationSearch => {
                 self.location_search = true;
                 self.repository = Some(TextEntry::default());
@@ -717,6 +741,7 @@ impl Ui {
             Page::Plugin => self.plugin(view, &p),
             Page::Presets => self.presets(view, &p),
             Page::Energy => self.energy(view, &p),
+            Page::EnergyRates => self.energy_rates(view, &p),
             Page::HeatingDetails => self.heating_details(view, &p),
             Page::Display => self.display_settings(view, &p),
             Page::Advanced => self.hardware_screen(view, &p),
@@ -1611,6 +1636,13 @@ impl Ui {
                 Action::Energy(meter, choice),
             );
         }
+        self.button(
+            Rect(754, 231, 215, 45),
+            "Energy rates",
+            p,
+            false,
+            Action::EnergyRates,
+        );
         let chart = match view.energy {
             Some(Ok(chart)) => chart,
             Some(Err(error)) => {
@@ -1688,7 +1720,17 @@ impl Ui {
                 )
             },
         );
-        self.text(56, 268, &summary, 22, p.text, 950);
+        self.text(56, 268, &summary, 22, p.text, 395);
+        if let Some(cost) = chart.estimated_cost(meter, view.settings.energy_rates) {
+            self.text(
+                412,
+                268,
+                &format!("{} €{cost:.2}", self.language.translate("Estimated cost")),
+                21,
+                p.text,
+                745,
+            );
+        }
         self.text(
             162,
             521,
@@ -1708,6 +1750,89 @@ impl Ui {
         if chart.partial {
             self.text(492, 521, "Incomplete readings", 17, p.muted, 730);
         }
+    }
+
+    fn energy_rates(&mut self, view: &View<'_>, p: &Palette) {
+        use crate::energy::Rate;
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 148, "Energy rates", 30, p.text, 730);
+        self.button(
+            Rect(754, 115, 215, 47),
+            "Energy",
+            p,
+            false,
+            Action::Energy(self.energy.0, self.energy.1),
+        );
+        if let Some(rate) = self.energy_rate {
+            self.text(56, 200, rate.title(), 24, p.text, 960);
+            if let Some(entry) = &self.repository {
+                let value = entry.text.clone();
+                self.raw_text(56, 240, &value, 25, p.text, 960);
+            }
+            for (index, key) in "123456789.0".chars().enumerate() {
+                self.button(
+                    Rect(56 + (index % 6) * 104, 271 + (index / 6) * 67, 94, 58),
+                    &key.to_string(),
+                    p,
+                    false,
+                    Action::Key(key),
+                );
+            }
+            self.button(Rect(576, 338, 94, 58), "⌫", p, false, Action::Backspace);
+            self.button(
+                Rect(56, 462, 215, 51),
+                "Cancel",
+                p,
+                false,
+                Action::EnergyRates,
+            );
+            self.button(
+                Rect(754, 462, 215, 51),
+                "Save",
+                p,
+                true,
+                Action::SaveEnergyRate(rate),
+            );
+            self.text(
+                56,
+                430,
+                self.energy_rate_error
+                    .unwrap_or("Save an empty field to clear the rate."),
+                19,
+                p.muted,
+                960,
+            );
+        } else {
+            for (index, rate) in Rate::ALL.into_iter().enumerate() {
+                let value = rate.value(view.settings.energy_rates);
+                let label = value.map_or_else(
+                    || self.language.translate("Not set").to_owned(),
+                    |value| format!("€{}.{:03}", value / 1000, value % 1000),
+                );
+                self.text(56, 218 + index * 76, rate.title(), 24, p.text, 720);
+                self.button(
+                    Rect(754, 183 + index * 76, 215, 55),
+                    &label,
+                    p,
+                    false,
+                    Action::EditEnergyRate(rate, value),
+                );
+            }
+        }
+    }
+
+    pub fn energy_rate_input(&self) -> Option<&str> {
+        self.repository.as_ref().map(|entry| entry.text.as_str())
+    }
+
+    pub fn close_energy_rate(&mut self) {
+        self.energy_rate = None;
+        self.energy_rate_error = None;
+        self.repository = None;
+    }
+
+    pub fn show_energy_rate_error(&mut self, message: &'static str) {
+        self.energy_rate_error = Some(message);
     }
 
     fn heating_details(&mut self, view: &View<'_>, p: &Palette) {
@@ -2005,6 +2130,16 @@ impl Ui {
             true,
             Action::Hardware(HardwareAction::Open),
         );
+        self.button(
+            Rect(32, 511, 325, 48),
+            "Export diagnostics",
+            p,
+            false,
+            Action::ExportDiagnostics,
+        );
+        if let Some(message) = view.diagnostics_message {
+            self.text(379, 540, message, 18, p.muted, 990);
+        }
     }
 
     fn display_settings(&mut self, view: &View<'_>, p: &Palette) {
@@ -2096,6 +2231,7 @@ impl Ui {
 }
 
 pub struct View<'a> {
+    pub diagnostics_message: Option<&'a str>,
     pub hardware: Option<&'a crate::advanced::State>,
     pub settings: &'a Settings,
     pub plugins: &'a [Plugin],

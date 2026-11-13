@@ -64,6 +64,55 @@ pub fn diagnostics() -> Result<Diagnostics, String> {
     })
 }
 
+#[cfg(target_os = "linux")]
+pub fn export_diagnostics(root: &std::path::Path) -> std::io::Result<()> {
+    use std::fs::{self, File, OpenOptions};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let diagnostics = diagnostics().ok();
+    let status = status().ok();
+    let report = serde_json::json!({
+        "toonshift_version": env!("CARGO_PKG_VERSION"),
+        "firmware_version": diagnostics.as_ref().and_then(|d| d.firmware_version.as_deref())
+            .filter(|value| value.len() <= 32 && value.bytes().all(|c| c.is_ascii_digit() || c == b'.')),
+        "open_therm_configured": diagnostics.as_ref().and_then(|d| d.open_therm_configured),
+        "hot_water_enabled": diagnostics.as_ref().and_then(|d| d.hot_water_enabled),
+        "thermostat_responded": status.is_some(),
+        "boiler_connected": status.as_ref().and_then(|s| match s.connection.as_str() {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        }),
+        "open_therm_communication_error": status.as_ref().and_then(|s| match s.ot_comm_error.as_str() {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        }),
+    });
+    let temporary = root.join("diagnostics.json.tmp");
+    match fs::remove_file(&temporary) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| {
+        serde_json::to_writer_pretty(&mut file, &report)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        fs::rename(&temporary, root.join("diagnostics.json"))?;
+        File::open(root)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
 pub fn history() -> Result<History, String> {
     let response = firmware_get("happ_thermstat", "action=getHeatingHistory")?;
     let parse = |name: &str| -> Result<Vec<Option<f64>>, String> {

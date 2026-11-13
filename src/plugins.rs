@@ -431,6 +431,7 @@ pub enum Appearance {
 #[serde(default)]
 pub struct Settings {
     pub meter_sources: crate::advanced::MeterSources,
+    pub energy_rates: crate::energy::Rates,
     pub theme: Theme,
     pub appearance: Appearance,
     pub installed: Vec<String>,
@@ -449,6 +450,7 @@ impl Default for Settings {
         Self {
             theme: Theme::Midnight,
             meter_sources: Default::default(),
+            energy_rates: Default::default(),
             appearance: Appearance::Auto,
             installed: vec!["clock".into(), "boiler".into()],
             locations: Default::default(),

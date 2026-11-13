@@ -11,7 +11,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | boilerMonitor | Thermostat, BoilerInfo, boiler adapter | Advanced setup exposes OpenTherm and on/off relay with confirmation and read-back. Reference unit still reports an offline link. Live boiler operation remains unverified. |
 | clock | RTC and firmware time service | Home clock and idle clock implemented. Timezone, time sync, and manual clock settings remain. |
 | controlPanel | Tenant registration | Map visible stock controls and their firmware contracts. |
-| customerService | Tenant and legacy services | Map visible support actions. Add local support and redacted diagnostics export. |
+| customerService | Tenant and legacy services | Settings exports an allowlisted support report. Verify export on-device and map remaining stock support actions. |
 | domesticHotWater | Thermostat DHW BoxTalk actions | Enabled flag, target, and range read verified. Controls need a DHW-capable appliance. |
 | eMetersSettings | P1, Z-Wave, power usage services | Counter archives and meter inventory verified. Advanced shows each Z-Wave adapter's electricity, gas, and water endpoint status. A local source override selects electricity and gas independently for live tiles. Physical sensor commissioning, firmware archive routing, and wired P1 setup still use the stock installer. |
 | fiona | Tenant-specific registration | Identify visible role before selecting a local equivalent. |
@@ -26,7 +26,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | settings | Firmware and ToonShift preferences | English/Dutch selection persisted on device. Themes, brightness, and idle settings need full device coverage. |
 | smokeDetector | Configured sensor | Verify status, test events, alerts, and faults on real hardware. |
 | solar | Configured logger or external collector | Chart and widget implemented. No solar logger on reference unit. Verify with a configured installation. |
-| statusUsage | `happ_pwrusage`, `hcb_rrd` | Totals and explicit data gaps implemented. Live readings, tariffs, and meter reset verification remain. |
+| statusUsage | `happ_pwrusage`, `hcb_rrd` | Totals, data gaps, and local cost estimates implemented. Estimate input uses the normal and low electricity counters separately and the recorded gas total. Verify rate persistence and live readings on-device. |
 | strvSettings | Smart radiator valves and HVAC | Identify commissioning flow, then verify real valve operation. |
 | systemSettings | Firmware config, watchdog, boot | Stock fallback exercised. Update state, export, and separate preference/factory reset flows remain. |
 | thermostat | `happ_thermstat` | Setpoint changes previously verified. HTTP and BoxTalk temperatures matched. Timed hold, faults, and reboot evidence remain. |

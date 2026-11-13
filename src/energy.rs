@@ -83,6 +83,92 @@ pub struct Chart {
     pub partial: bool,
     pub from: u64,
     pub to: u64,
+    #[serde(skip)]
+    tariff_usage: [Option<f64>; 2],
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct Rates {
+    pub standard: Option<u32>,
+    pub off_peak: Option<u32>,
+    pub gas: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+pub enum Rate {
+    Standard,
+    OffPeak,
+    Gas,
+}
+
+impl Rate {
+    pub const ALL: [Self; 3] = [Self::Standard, Self::OffPeak, Self::Gas];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard electricity (€/kWh)",
+            Self::OffPeak => "Off-peak electricity (€/kWh)",
+            Self::Gas => "Gas rate (€/m³)",
+        }
+    }
+
+    fn field(self, rates: &mut Rates) -> &mut Option<u32> {
+        match self {
+            Self::Standard => &mut rates.standard,
+            Self::OffPeak => &mut rates.off_peak,
+            Self::Gas => &mut rates.gas,
+        }
+    }
+
+    pub fn value(self, mut rates: Rates) -> Option<u32> {
+        *self.field(&mut rates)
+    }
+
+    pub fn save(self, rates: &mut Rates, input: &str) -> Result<(), &'static str> {
+        let value = if input.is_empty() {
+            None
+        } else {
+            let (whole, fraction) = input.split_once(['.', ',']).unwrap_or((input, ""));
+            if whole.is_empty()
+                || fraction.len() > 3
+                || !whole
+                    .bytes()
+                    .chain(fraction.bytes())
+                    .all(|c| c.is_ascii_digit())
+            {
+                return Err("Enter a rate from 0 to 99.999.");
+            }
+            let whole: u32 = whole
+                .parse()
+                .map_err(|_| "Enter a rate from 0 to 99.999.")?;
+            if whole > 99 {
+                return Err("Enter a rate from 0 to 99.999.");
+            }
+            let fraction =
+                fraction.parse::<u32>().unwrap_or(0) * 10_u32.pow(3 - fraction.len() as u32);
+            Some(whole * 1000 + fraction)
+        };
+        *self.field(rates) = value;
+        Ok(())
+    }
+}
+
+impl Chart {
+    pub fn estimated_cost(&self, meter: Meter, rates: Rates) -> Option<f64> {
+        match meter {
+            Meter::Electricity => {
+                let [standard, off_peak] = self.tariff_usage;
+                Some(
+                    (standard? * f64::from(rates.standard?)
+                        + off_peak? * f64::from(rates.off_peak?))
+                        / 1000.0,
+                )
+            }
+            Meter::Gas => Some(self.total? * f64::from(rates.gas?) / 1000.0),
+            _ => None,
+        }
+    }
 }
 
 type Samples = BTreeMap<u64, Option<f64>>;
@@ -135,6 +221,28 @@ fn changes(readings: Samples, interval: u64) -> Samples {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rates_preserve_precision_and_missing_values() {
+        let mut rates = Rates::default();
+        Rate::Standard.save(&mut rates, "0,355").unwrap();
+        Rate::OffPeak.save(&mut rates, "0.25").unwrap();
+        Rate::Gas.save(&mut rates, "1.2").unwrap();
+        assert!(Rate::Gas.save(&mut rates, "1.2345").is_err());
+        let chart = Chart {
+            bars: Vec::new(),
+            unit: "kWh",
+            total: Some(3.0),
+            partial: true,
+            from: 0,
+            to: 3600,
+            tariff_usage: [Some(2.0), Some(1.0)],
+        };
+        assert_eq!(chart.estimated_cost(Meter::Electricity, rates), Some(0.96));
+        assert_eq!(rates.gas, Some(1200));
+        Rate::OffPeak.save(&mut rates, "").unwrap();
+        assert_eq!(chart.estimated_cost(Meter::Electricity, rates), None);
+    }
 
     #[test]
     fn energy_deltas_distinguish_zero_usage_gaps_and_counter_resets() {
@@ -196,6 +304,7 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
     };
     let mut readings = samples(primary, archive, start, end, count)?;
     let mut partial = false;
+    let mut tariff_usage = [None; 2];
     if !period.flow() {
         readings = changes(readings, interval);
         if let Some(extra) = extra {
@@ -209,7 +318,13 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
                 for (&time, value) in &mut readings {
                     *value = value
                         .zip(secondary.get(&time).copied().flatten())
-                        .map(|(a, b)| a + b);
+                        .map(|(a, b)| {
+                            if meter == Meter::Electricity && time > start && time <= end {
+                                *tariff_usage[0].get_or_insert(0.0) += a;
+                                *tariff_usage[1].get_or_insert(0.0) += b;
+                            }
+                            a + b
+                        });
                 }
             }
         }
@@ -249,5 +364,6 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
         partial: partial || observed < window / interval,
         from: start,
         to: end,
+        tariff_usage,
     })
 }

@@ -17,6 +17,22 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Export diagnostics" => "Diagnostiek exporteren",
+            "Exporting diagnostics…" => "Diagnostiek exporteren…",
+            "Saved diagnostics.json in the ToonShift data directory." => {
+                "diagnostics.json opgeslagen in de ToonShift-map."
+            }
+            "Could not save diagnostics.json." => "Kon diagnostics.json niet opslaan.",
+            "Energy rates" => "Energietarieven",
+            "Standard electricity (€/kWh)" => "Normaaltarief stroom (€/kWh)",
+            "Off-peak electricity (€/kWh)" => "Daltarief stroom (€/kWh)",
+            "Gas rate (€/m³)" => "Gastarief (€/m³)",
+            "Estimated cost" => "Geschatte kosten",
+            "Not set" => "Niet ingesteld",
+            "Enter a rate from 0 to 99.999." => "Voer een tarief in van 0 tot 99,999.",
+            "Save an empty field to clear the rate." => {
+                "Sla een leeg veld op om het tarief te wissen."
+            }
             "Store" => "Winkel",
             "Settings" => "Instellingen",
             "Language" => "Taal",
