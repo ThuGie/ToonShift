@@ -7,9 +7,9 @@ The Store reads built-in widgets and local JSON files in `/mnt/data/toon-rust/ca
 ./scripts/sync-plugin-repo.ps1 -Toon toon -Repository another-owner/another-catalog -Commit <full-commit-sha>
 ```
 
-From the touchscreen, **Store → Refresh official** downloads the official index. **Add GitHub source** accepts `owner/repository` for its main branch or `owner/repository@<full-commit-sha>` for a pinned revision. **Install** downloads only the selected package. ToonShift checks its SHA-256, ID, and release before activating it. **Update** replaces the package after those checks and preserves its tile and location. An installed package stays on its existing release until updated.
+From the touchscreen, **Store → Catalog sources → Refresh official** downloads the official index and verifies it against the public key shipped with ToonShift. **Add GitHub source** accepts `owner/repository` for its main branch or `owner/repository@<full-commit-sha>` for a pinned revision. Provision the community publisher's Ed25519 public key independently before adding the source. Save the 32-byte raw public key as 64 hex digits in `/mnt/data/toon-rust/catalog-keys/owner--repository.pub`, using lowercase owner and repository names. **Install** downloads only the selected package and checks its SHA-256, ID, and release. **Update** preserves tile placement and location settings.
 
-The PowerShell script is also available to download and transfer a pinned catalog over SSH. To stop using a source, remove its `owner--repository.json` over SSH. Remove any installed tiles in Store before removing the source if you want them removed from your dashboard too. A missing source displays its installed widgets as **Unavailable**.
+The PowerShell script invokes the device's signed catalog sync over SSH. Refresh legacy GitHub sources once after updating ToonShift to replace the old cache with a signed copy. Existing package files and settings are reused after refresh.
 
 ```json
 {
@@ -25,11 +25,11 @@ The PowerShell script is also available to download and transfer a pinned catalo
 }
 ```
 
-Use a globally unique lowercase ID with digits and hyphens, up to 40 characters. Valid sources are `clock`, `boiler`, `next_target`, `note` with `text`, and `file`. With `file`, a collector publishes one UTF-8 line to `/mnt/data/toon-rust/values/<id>.txt` using a temporary file and rename. Files must be at most 1,024 bytes. A catalog cannot add executable code, configure networking, or write thermostat settings.
+Use a lowercase ID with digits and hyphens, up to 40 characters. This inline example is for locally managed catalogs. With `file`, a collector publishes one UTF-8 line to `/mnt/data/toon-rust/values/<id>.txt` using a temporary file and rename. Files must be at most 1,024 bytes.
 
 Each version 1 catalog has room for 64 entries within 32 KiB. The app reads up to 64 catalog files and 128 total widgets. Built-in IDs take precedence, followed by catalog filenames in sorted order. Use a publisher prefix to avoid collisions.
 
-For separate downloads, include `"artifact": {"path":"plugins/yourname-widget.json","sha256":"…"}` in the index entry. Use `"source":"file"` as the listing's placeholder. The package defines the real source, and shares the entry's `id` and `release`. The SHA-256 covers the exact UTF-8 bytes served by GitHub. Standalone and inline manifests remain supported.
+For GitHub downloads, include `"artifact": {"path":"plugins/yourname-widget.json","sha256":"…"}` in every index entry. Use `"source":"file"` as the listing's placeholder. The package defines the real source, and shares the entry's `id` and `release`. The SHA-256 covers the exact UTF-8 bytes served by GitHub. Publish a detached Ed25519 signature as `catalog.sig`, containing 128 hex digits over the exact bytes of `catalog.json`. Publish both files in the same commit.
 
 The generic `https_json` source accepts an HTTPS URL template, a numeric JSON pointer, suffix and precision, and optional detail labels, range rows, locations, and location-search schema. Weather's Open-Meteo endpoints, field mappings, and English and Dutch condition labels are in its own package. ToonShift runs the same renderer and fetcher for each package. HTTPS feeds use certificate verification and a pinned public IPv4 connection for each request.
 

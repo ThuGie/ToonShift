@@ -193,6 +193,69 @@ struct Repository {
 }
 
 pub const OFFICIAL: &str = "ThuGie/ToonShift-plugins";
+const OFFICIAL_KEY: &str = "0281447f0840d001543e4e7a51fbd4aa5da4cf57c5d9c04504d15133c4c20d6b";
+const CATALOG_CACHE_LIMIT: u64 = 70000;
+
+#[derive(Deserialize, Serialize)]
+struct SignedCatalog {
+    origin: String,
+    manifest: String,
+    signature: String,
+}
+
+fn hex_bytes<const N: usize>(value: &str) -> Option<[u8; N]> {
+    let value = value.trim();
+    if value.len() != N * 2 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut bytes = [0; N];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(bytes)
+}
+
+fn verify_manifest(key: &str, manifest: &[u8], signature: &str) -> Result<(), String> {
+    use ed25519_dalek::{Signature, VerifyingKey};
+    let key = hex_bytes(key)
+        .and_then(|bytes| VerifyingKey::from_bytes(&bytes).ok())
+        .ok_or("Invalid catalog public key")?;
+    let signature =
+        Signature::from_bytes(&hex_bytes(signature).ok_or("Invalid catalog signature")?);
+    key.verify_strict(manifest, &signature)
+        .map_err(|_| "Catalog signature verification failed".into())
+}
+
+fn catalog_key(root: &Path, owner: &str, name: &str) -> Result<String, String> {
+    if format!("{owner}/{name}").eq_ignore_ascii_case(OFFICIAL) {
+        return Ok(OFFICIAL_KEY.into());
+    }
+    let path = root.join("catalog-keys").join(format!(
+        "{}--{}.pub",
+        owner.to_ascii_lowercase(),
+        name.to_ascii_lowercase()
+    ));
+    if !fs::symlink_metadata(&path).is_ok_and(|info| info.is_file() && info.len() <= 128) {
+        return Err("Provision the publisher's catalog key before adding this source.".into());
+    }
+    fs::read_to_string(path).map_err(|error| error.to_string())
+}
+
+fn cached_repository(root: &Path, bytes: &[u8]) -> Option<Repository> {
+    if let Ok(signed) = serde_json::from_slice::<SignedCatalog>(bytes) {
+        let (owner, name, _) = origin_parts(&signed.origin)?;
+        let key = catalog_key(root, owner, name).ok()?;
+        verify_manifest(&key, signed.manifest.as_bytes(), &signed.signature).ok()?;
+        let mut repository: Repository = serde_json::from_str(&signed.manifest).ok()?;
+        repository.origin = Some(signed.origin);
+        return Some(repository);
+    }
+    let repository: Repository = serde_json::from_slice(bytes).ok()?;
+    if repository.origin.is_some() {
+        return None;
+    }
+    Some(repository)
+}
 
 pub struct CatalogSource {
     path: std::path::PathBuf,
@@ -211,8 +274,10 @@ fn origin_parts(origin: &str) -> Option<(&str, &str, &str)> {
         || name.is_empty()
         || revision.is_empty()
         || ![owner, name, revision].iter().all(|part| {
-            part.bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+            part.as_bytes()[0].is_ascii_alphanumeric()
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
         })
     {
         return None;
@@ -229,19 +294,22 @@ pub fn sources(root: &Path) -> Vec<CatalogSource> {
             let path = entry.path();
             if path.extension()?.to_str()? != "json"
                 || !fs::symlink_metadata(&path)
-                    .is_ok_and(|info| info.is_file() && info.len() <= 32768)
+                    .is_ok_and(|info| info.is_file() && info.len() <= CATALOG_CACHE_LIMIT)
             {
                 return None;
             }
-            let repo: Repository = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
-            let (owner, name, revision) = origin_parts(repo.origin.as_deref()?)?;
-            if repo.version != 1
-                || path.file_name()?.to_str()?
-                    != format!(
-                        "{}--{}.json",
-                        owner.to_ascii_lowercase(),
-                        name.to_ascii_lowercase()
-                    )
+            let bytes = fs::read(&path).ok()?;
+            let origin = serde_json::from_slice::<SignedCatalog>(&bytes)
+                .ok()
+                .map(|signed| signed.origin)
+                .or_else(|| serde_json::from_slice::<Repository>(&bytes).ok()?.origin)?;
+            let (owner, name, revision) = origin_parts(&origin)?;
+            if path.file_name()?.to_str()?
+                != format!(
+                    "{}--{}.json",
+                    owner.to_ascii_lowercase(),
+                    name.to_ascii_lowercase()
+                )
             {
                 return None;
             }
@@ -285,8 +353,13 @@ pub fn sync(root: &Path, input: &str) -> Result<usize, String> {
     {
         return Err("Use @ followed by a full 40-digit GitHub commit.".into());
     }
-    let url = format!("https://raw.githubusercontent.com/{owner}/{name}/{revision}/catalog.json");
-    let response = crate::download::get(&root.join("https-roots.pem"), &url)?;
+    let key = catalog_key(root, owner, name)?;
+    let origin = format!("https://raw.githubusercontent.com/{owner}/{name}/{revision}/");
+    let ca = root.join("https-roots.pem");
+    let response = crate::download::get(&ca, &format!("{origin}catalog.json"))?;
+    let signature = crate::download::get(&ca, &format!("{origin}catalog.sig"))?;
+    let signature = String::from_utf8(signature).map_err(|_| "Invalid catalog signature")?;
+    verify_manifest(&key, &response, &signature)?;
     let repository: Repository =
         serde_json::from_slice(&response).map_err(|_| "Invalid catalog manifest")?;
     if repository.version != 1 || repository.plugins.len() > 64 {
@@ -296,7 +369,7 @@ pub fn sync(root: &Path, input: &str) -> Result<usize, String> {
     if !repository
         .plugins
         .iter()
-        .all(|plugin| valid_plugin(plugin) && seen.insert(&plugin.id))
+        .all(|plugin| valid_plugin(plugin) && plugin.artifact.is_some() && seen.insert(&plugin.id))
     {
         return Err("The catalog contains invalid or duplicate widgets.".into());
     }
@@ -309,14 +382,14 @@ pub fn sync(root: &Path, input: &str) -> Result<usize, String> {
     );
     let temporary = dir.join(format!(".{file}.{}.tmp", std::process::id()));
     let destination = dir.join(format!("{file}.json"));
-    let mut cached: serde_json::Value =
-        serde_json::from_slice(&response).map_err(|_| "Invalid catalog manifest")?;
-    cached["origin"] = serde_json::json!(format!(
-        "https://raw.githubusercontent.com/{owner}/{name}/{revision}/"
-    ));
-    let cached = serde_json::to_vec(&cached).map_err(|err| err.to_string())?;
-    if cached.len() > 32768 {
-        return Err("Catalog exceeds 32 KiB".into());
+    let cached = serde_json::to_vec(&SignedCatalog {
+        origin,
+        manifest: String::from_utf8(response).map_err(|_| "Invalid catalog manifest encoding")?,
+        signature,
+    })
+    .map_err(|error| error.to_string())?;
+    if cached.len() as u64 > CATALOG_CACHE_LIMIT {
+        return Err("Catalog exceeds cache size limit".into());
     }
     let result = (|| -> io::Result<()> {
         let mut handle = File::create(&temporary)?;
@@ -471,11 +544,13 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
     entries.sort();
     let mut seen: HashSet<_> = plugins.iter().map(|plugin| plugin.id.clone()).collect();
     for path in entries.into_iter().take(64) {
-        if !fs::symlink_metadata(&path).is_ok_and(|entry| entry.is_file() && entry.len() <= 32768) {
+        if !fs::symlink_metadata(&path)
+            .is_ok_and(|entry| entry.is_file() && entry.len() <= CATALOG_CACHE_LIMIT)
+        {
             continue;
         }
         let candidates = fs::read(&path).ok().and_then(|bytes| {
-            if let Ok(repository) = serde_json::from_slice::<Repository>(&bytes) {
+            if let Some(repository) = cached_repository(root, &bytes) {
                 return (repository.version == 1 && repository.plugins.len() <= 64).then(|| {
                     repository
                         .plugins
@@ -519,7 +594,16 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                     .as_ref()
                     .and_then(|artifact| artifact.package_file(root, &package_id))
                 {
-                    if let Some((_, installed)) = read_package(&package, &package_id) {
+                    let installed =
+                        read_package(&package, &package_id).filter(|(bytes, installed)| {
+                            use sha2::{Digest, Sha256};
+                            installed.release != plugin.release
+                                || plugin.artifact.as_ref().is_some_and(|artifact| {
+                                    format!("{:x}", Sha256::digest(bytes))
+                                        .eq_ignore_ascii_case(&artifact.sha256)
+                                })
+                        });
+                    if let Some((_, installed)) = installed {
                         plugin.previous_release =
                             read_package(&package.with_extension("previous"), &package_id)
                                 .map(|(_, previous)| previous.release)
@@ -700,6 +784,27 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the separate ToonShift-plugins checkout"]
+    fn official_signature_rejects_manifest_changes() {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("ToonShift-plugins");
+        let manifest = fs::read_to_string(checkout.join("catalog.json"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let signature = fs::read_to_string(checkout.join("catalog.sig")).unwrap();
+        assert!(verify_manifest(OFFICIAL_KEY, manifest.as_bytes(), &signature).is_ok());
+        let modified = manifest.replace("Weather", "Weather Changed");
+        assert!(verify_manifest(OFFICIAL_KEY, modified.as_bytes(), &signature).is_err());
+        let signed = SignedCatalog {
+            origin: format!("https://raw.githubusercontent.com/{OFFICIAL}/main/"),
+            manifest,
+            signature,
+        };
+        let bytes = serde_json::to_vec(&signed).unwrap();
+        assert!(cached_repository(&checkout, &bytes).is_some());
+        assert!(cached_repository(&checkout, br#"{"version":1,"plugins":[],"origin":"https://raw.githubusercontent.com/ThuGie/ToonShift-plugins/main/"}"#).is_none());
+    }
 
     #[test]
     fn migration_keeps_order_and_leaves_ambiguous_ids_alone() {

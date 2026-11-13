@@ -138,6 +138,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use ui::Action;
 
     let root = Path::new("/mnt/data/toon-rust");
+    if std::env::args().nth(1).as_deref() == Some("--sync-plugin-repo") {
+        let repository = std::env::args()
+            .nth(2)
+            .ok_or("Expected a GitHub catalog source")?;
+        download::trust(root)?;
+        let count = plugins::sync(root, &repository)?;
+        println!("Synced {count} widgets from {repository}");
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--stock-session-return") {
         let pid: libc::pid_t = std::env::args()
             .nth(2)
