@@ -251,3 +251,48 @@ pub fn format_time(seconds: i64) -> (u8, String) {
         )
     }
 }
+
+pub fn vacation_date(seconds: i32) -> Option<[i32; 5]> {
+    let seconds = seconds as _;
+    unsafe {
+        let mut local: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&seconds, &mut local).is_null() {
+            return None;
+        }
+        Some([
+            local.tm_year + 1900,
+            local.tm_mon + 1,
+            local.tm_mday,
+            local.tm_hour,
+            local.tm_min,
+        ])
+    }
+}
+
+pub fn vacation_timestamp(date: [i32; 5]) -> Option<i32> {
+    let [year, month, day, hour, minute] = date;
+    if !(1970..=2038).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..24).contains(&hour)
+        || !(0..60).contains(&minute)
+    {
+        return None;
+    }
+    let mut matches = [None; 2];
+    for (dst, result) in matches.iter_mut().enumerate() {
+        let mut local: libc::tm = unsafe { std::mem::zeroed() };
+        local.tm_year = year - 1900;
+        local.tm_mon = month - 1;
+        local.tm_mday = day;
+        local.tm_hour = hour;
+        local.tm_min = minute;
+        local.tm_isdst = dst as i32;
+        let seconds = i32::try_from(i64::from(unsafe { libc::mktime(&mut local) })).ok();
+        *result = seconds.filter(|seconds| *seconds > 0 && vacation_date(*seconds) == Some(date));
+    }
+    match matches {
+        [Some(a), Some(b)] if a != b => None,
+        [a, b] => a.or(b),
+    }
+}

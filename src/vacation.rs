@@ -69,10 +69,12 @@ fn parse(xml: &str) -> Result<Vec<Vacation>, String> {
 
 pub fn load() -> Result<Vec<Vacation>, String> {
     let response = crate::boxtalk::thermostat(&["GetHolidays"]).map_err(|e| e.to_string())?;
-    parse(&response[0])
+    let mut entries = parse(&response[0])?;
+    entries.sort_by_key(|entry| (entry.start, entry.end));
+    Ok(entries)
 }
 
-pub fn save(id: Option<Id>, start: i32, end: i32) -> Result<(), String> {
+pub fn save(id: Option<Id>, start: i32, end: i32) -> Result<Vec<Vacation>, String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -102,9 +104,10 @@ pub fn save(id: Option<Id>, start: i32, end: i32) -> Result<(), String> {
     })
 }
 
-pub fn remove(id: Id) -> Result<(), String> {
-    if !load()?.iter().any(|entry| entry.id == id.as_str()) {
-        return Ok(());
+pub fn remove(id: Id) -> Result<Vec<Vacation>, String> {
+    let existing = load()?;
+    if !existing.iter().any(|entry| entry.id == id.as_str()) {
+        return Ok(existing);
     }
     crate::boxtalk::send_thermostat_action(
         "RemoveHoliday",
@@ -114,11 +117,13 @@ pub fn remove(id: Id) -> Result<(), String> {
     confirm(|entries| entries.iter().all(|entry| entry.id != id.as_str()))
 }
 
-fn confirm(matches: impl Fn(&[Vacation]) -> bool) -> Result<(), String> {
+fn confirm(matches: impl Fn(&[Vacation]) -> bool) -> Result<Vec<Vacation>, String> {
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(150));
-        if load().is_ok_and(|entries| matches(&entries)) {
-            return Ok(());
+        if let Ok(entries) = load() {
+            if matches(&entries) {
+                return Ok(entries);
+            }
         }
     }
     Err("Firmware vacation change could not be confirmed".into())

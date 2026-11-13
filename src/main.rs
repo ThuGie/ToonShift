@@ -91,6 +91,8 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         root,
         schedule: None,
         presets: None,
+        vacations: None,
+        vacation_busy: false,
         networks: None,
         network_message: None,
         catalog_message: None,
@@ -288,6 +290,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut status = None;
     let mut schedule = None;
     let mut presets = None;
+    let mut vacations = None;
+    let mut vacation_busy = false;
     let (network_sender, network_receiver) = std::sync::mpsc::channel();
     let (join_sender, join_receiver) = std::sync::mpsc::channel();
     let mut joining = false;
@@ -482,6 +486,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 || update.completed
                 || update.schedule.is_some()
                 || update.presets.is_some()
+                || update.vacations.is_some()
                 || catalog.iter().any(|plugin| {
                     matches!(plugin.source, plugins::Source::File)
                         && settings.installed.contains(&plugin.id)
@@ -497,6 +502,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(result) = update.presets {
                 presets = Some(result);
+            }
+            if let Some(result) = update.vacations {
+                if result.is_ok() && vacation_busy {
+                    ui.close_vacation_editor();
+                }
+                vacations = Some(result);
+                vacation_busy = false;
             }
             if update.completed {
                 pending = false;
@@ -530,6 +542,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 root,
                 schedule: schedule.as_ref(),
                 presets: presets.as_ref(),
+                vacations: vacations.as_ref(),
+                vacation_busy,
                 networks: networks.as_ref(),
                 network_message: network_message.as_deref(),
                 catalog_message: catalog_message.as_deref(),
@@ -830,6 +844,66 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 commands
                     .send(thermostat::Work::from_ui(thermostat::Command::Presets))
                     .map_err(|_| "Thermostat worker stopped")?;
+                persist = false;
+            }
+            Some(Action::Vacations) => {
+                if !vacation_busy {
+                    commands.send(thermostat::Work::from_ui(thermostat::Command::Vacations))?;
+                    vacation_busy = true;
+                }
+                persist = false;
+            }
+            Some(Action::EditVacation(index)) => {
+                let format = |seconds| {
+                    device::vacation_date(seconds).map_or_else(String::new, |[y, m, d, h, min]| {
+                        format!("{y:04}{m:02}{d:02}{h:02}{min:02}")
+                    })
+                };
+                if let Some(index) = index {
+                    if let Some(entry) = vacations
+                        .as_ref()
+                        .and_then(|result| result.as_ref().ok())
+                        .and_then(|entries| entries.get(index))
+                    {
+                        if let Some(id) = vacation::Id::parse(&entry.id) {
+                            ui.edit_vacation(Some(id), [format(entry.start), format(entry.end)]);
+                        }
+                    }
+                } else {
+                    ui.edit_vacation(None, Default::default());
+                }
+                persist = false;
+            }
+            Some(Action::SaveVacation) => {
+                let input = ui.vacation_input().and_then(|(id, [start, end])| {
+                    Some((
+                        id,
+                        device::vacation_timestamp(start)?,
+                        device::vacation_timestamp(end)?,
+                    ))
+                });
+                if let Some((id, start, end)) = input {
+                    commands.send(thermostat::Work::from_ui(
+                        thermostat::Command::SaveVacation(id, start, end),
+                    ))?;
+                    vacation_busy = true;
+                } else {
+                    ui.vacation_input_error();
+                }
+                persist = false;
+            }
+            Some(Action::RemoveVacation(index)) => {
+                if let Some(id) = vacations
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .and_then(|entries| entries.get(index))
+                    .and_then(|entry| vacation::Id::parse(&entry.id))
+                {
+                    commands.send(thermostat::Work::from_ui(
+                        thermostat::Command::RemoveVacation(id),
+                    ))?;
+                    vacation_busy = true;
+                }
                 persist = false;
             }
             Some(Action::SavePreset(preset)) => {

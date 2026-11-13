@@ -29,6 +29,7 @@ enum Page {
     Network,
     Plugin,
     Presets,
+    Vacations,
     Energy,
     EnergyRates,
     HeatingDetails,
@@ -75,6 +76,13 @@ pub enum Action {
     ConfirmRemoveSource(usize),
     RemoveSource(usize),
     Presets,
+    Vacations,
+    VacationPage(usize),
+    EditVacation(Option<usize>),
+    VacationField(bool),
+    SaveVacation,
+    ConfirmRemoveVacation(usize),
+    RemoveVacation(usize),
     EditPreset(crate::presets::Preset),
     AdjustPreset(i32),
     ToggleHotWater,
@@ -174,6 +182,9 @@ pub struct Ui {
     remove_source: Option<usize>,
     location_search: bool,
     preset_editor: Option<crate::presets::Preset>,
+    vacation_editor: Option<VacationEditor>,
+    vacation_offset: usize,
+    vacation_remove: Option<usize>,
     energy: (crate::energy::Meter, crate::energy::Period),
     energy_rate: Option<crate::energy::Rate>,
     energy_rate_error: Option<&'static str>,
@@ -215,6 +226,9 @@ impl Ui {
             remove_source: None,
             location_search: false,
             preset_editor: None,
+            vacation_editor: None,
+            vacation_offset: 0,
+            vacation_remove: None,
             energy: (
                 crate::energy::Meter::Electricity,
                 crate::energy::Period::Day,
@@ -429,6 +443,24 @@ impl Ui {
             self.repository = None;
         }
         match action {
+            Action::Vacations => {
+                self.page = Page::Vacations;
+                self.vacation_editor = None;
+                self.vacation_remove = None;
+                self.repository = None;
+                return Some(action);
+            }
+            Action::VacationPage(offset) => self.vacation_offset = offset,
+            Action::VacationField(end) => {
+                if let Some(editor) = &mut self.vacation_editor {
+                    if let Some(entry) = self.repository.as_mut() {
+                        editor.dates[usize::from(editor.end)].clone_from(&entry.text);
+                        editor.end = end;
+                        entry.text.clone_from(&editor.dates[usize::from(end)]);
+                    }
+                }
+            }
+            Action::ConfirmRemoveVacation(index) => self.vacation_remove = Some(index),
             Action::CatalogSources => {
                 self.source_list = true;
                 self.remove_source = None;
@@ -524,7 +556,13 @@ impl Ui {
                 }
             }
             Action::Key(key) => {
-                if self.naming_dashboard {
+                if self.page == Page::Vacations {
+                    if let Some(entry) = &mut self.repository {
+                        if entry.text.len() < 12 && key.is_ascii_digit() {
+                            entry.text.push(key);
+                        }
+                    }
+                } else if self.naming_dashboard {
                     if let Some(entry) = self.repository.as_mut() {
                         if entry.text.chars().count() < 18 {
                             entry.text.push(key);
@@ -837,6 +875,7 @@ impl Ui {
             Page::Network => self.network(view, &p),
             Page::Plugin => self.plugin(view, &p),
             Page::Presets => self.presets(view, &p),
+            Page::Vacations => self.vacations(view, &p),
             Page::Energy => self.energy(view, &p),
             Page::EnergyRates => self.energy_rates(view, &p),
             Page::HeatingDetails => self.heating_details(view, &p),
@@ -1481,6 +1520,13 @@ impl Ui {
             false,
             Action::Schedule,
         );
+        self.button(
+            Rect(512, 115, 202, 48),
+            "Vacations",
+            p,
+            false,
+            Action::Vacations,
+        );
         match view.presets {
             Some(Ok(presets)) => {
                 for (index, preset) in presets.iter().enumerate() {
@@ -1663,6 +1709,249 @@ impl Ui {
         self.dashboard_page = self.dashboard_page.min(pages - 1);
         self.dashboard_tiles(view, p, self.dashboard_page, true);
         self.dashboard_controls(view, p, pages);
+    }
+
+    pub fn edit_vacation(&mut self, id: Option<crate::vacation::Id>, dates: [String; 2]) {
+        self.repository = Some(TextEntry {
+            text: dates[0].clone(),
+            ..Default::default()
+        });
+        self.vacation_editor = Some(VacationEditor {
+            id,
+            dates,
+            end: false,
+            error: None,
+        });
+    }
+
+    pub fn vacation_input(&mut self) -> Option<(Option<crate::vacation::Id>, [[i32; 5]; 2])> {
+        let editor = self.vacation_editor.as_mut()?;
+        editor.dates[usize::from(editor.end)].clone_from(&self.repository.as_ref()?.text);
+        let parse = |text: &str| {
+            if text.len() != 12 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            Some([
+                text[..4].parse().ok()?,
+                text[4..6].parse().ok()?,
+                text[6..8].parse().ok()?,
+                text[8..10].parse().ok()?,
+                text[10..].parse().ok()?,
+            ])
+        };
+        Some((
+            editor.id,
+            [parse(&editor.dates[0])?, parse(&editor.dates[1])?],
+        ))
+    }
+
+    pub fn vacation_input_error(&mut self) {
+        if let Some(editor) = &mut self.vacation_editor {
+            editor.error = Some("Enter two valid local dates and times.");
+        }
+    }
+
+    pub fn close_vacation_editor(&mut self) {
+        if self.page == Page::Vacations {
+            self.repository = None;
+        }
+        self.vacation_editor = None;
+        self.vacation_remove = None;
+    }
+
+    fn vacations(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 152, "Vacations", 30, p.text, 730);
+        self.button(
+            Rect(728, 115, 238, 48),
+            "Heating presets",
+            p,
+            false,
+            Action::Presets,
+        );
+        if view.vacation_busy {
+            self.text(56, 227, "Checking vacation schedule…", 22, p.muted, 967);
+            return;
+        }
+        if let Some(editor) = &self.vacation_editor {
+            let end = editor.end;
+            let dates = editor.dates.clone();
+            let error = editor.error;
+            let current = self
+                .repository
+                .as_ref()
+                .map_or(String::new(), |entry| entry.text.clone());
+            for (index, label) in ["Start date", "End date"].into_iter().enumerate() {
+                let active = index == usize::from(end);
+                let x = 56 + 459 * index;
+                self.button(
+                    Rect(x, 179, 430, 45),
+                    label,
+                    p,
+                    active,
+                    Action::VacationField(index == 1),
+                );
+                self.raw_text(
+                    x,
+                    256,
+                    if active { &current } else { &dates[index] },
+                    26,
+                    p.text,
+                    x + 430,
+                );
+            }
+            for (index, digit) in "1234567890".chars().enumerate() {
+                self.button(
+                    Rect(56 + index * 81, 283, 72, 62),
+                    &digit.to_string(),
+                    p,
+                    false,
+                    Action::Key(digit),
+                );
+            }
+            self.button(
+                Rect(56, 360, 200, 46),
+                "Backspace",
+                p,
+                false,
+                Action::Backspace,
+            );
+            self.text(
+                280,
+                389,
+                error.unwrap_or("Enter year, month, day, hour and minute (YYYYMMDDHHMM)."),
+                19,
+                p.muted,
+                969,
+            );
+            self.button(
+                Rect(56, 467, 210, 52),
+                "Cancel",
+                p,
+                false,
+                Action::Vacations,
+            );
+            self.button(
+                Rect(752, 467, 215, 52),
+                "Save",
+                p,
+                true,
+                Action::SaveVacation,
+            );
+            if let Some(Err(error)) = view.vacations {
+                self.text(56, 446, error, 18, p.muted, 969);
+            }
+            return;
+        }
+        if let Some(index) = self.vacation_remove {
+            self.text(56, 227, "Remove this vacation?", 27, p.text, 967);
+            if let Some(Err(error)) = view.vacations {
+                self.text(56, 286, error, 20, p.muted, 969);
+                self.button(
+                    Rect(752, 467, 215, 52),
+                    "Refresh",
+                    p,
+                    true,
+                    Action::Vacations,
+                );
+            } else {
+                self.button(
+                    Rect(56, 467, 210, 52),
+                    "Cancel",
+                    p,
+                    false,
+                    Action::Vacations,
+                );
+                self.button(
+                    Rect(752, 467, 215, 52),
+                    "Remove",
+                    p,
+                    true,
+                    Action::RemoveVacation(index),
+                );
+            }
+            return;
+        }
+        let entries = match view.vacations {
+            Some(Ok(entries)) => entries,
+            Some(Err(error)) => {
+                self.text(56, 225, error, 21, p.muted, 966);
+                self.button(
+                    Rect(752, 467, 215, 52),
+                    "Refresh",
+                    p,
+                    true,
+                    Action::Vacations,
+                );
+                return;
+            }
+            None => return,
+        };
+        self.vacation_offset = self
+            .vacation_offset
+            .min(entries.len().saturating_sub(1) / 4 * 4);
+        if entries.is_empty() {
+            self.text(56, 225, "No vacations scheduled", 23, p.muted, 966);
+        }
+        for (index, entry) in entries
+            .iter()
+            .enumerate()
+            .skip(self.vacation_offset)
+            .take(4)
+        {
+            let y = 178 + (index - self.vacation_offset) * 65;
+            self.raw_text(
+                56,
+                y + 33,
+                &format!(
+                    "{} – {}",
+                    vacation_label(entry.start),
+                    vacation_label(entry.end)
+                ),
+                19,
+                p.text,
+                604,
+            );
+            self.button(
+                Rect(612, y, 160, 49),
+                "Edit",
+                p,
+                false,
+                Action::EditVacation(Some(index)),
+            );
+            self.button(
+                Rect(784, y, 182, 49),
+                "Remove",
+                p,
+                false,
+                Action::ConfirmRemoveVacation(index),
+            );
+        }
+        if self.vacation_offset > 0 {
+            self.button(
+                Rect(56, 467, 170, 52),
+                "Previous",
+                p,
+                false,
+                Action::VacationPage(self.vacation_offset - 4),
+            );
+        }
+        if self.vacation_offset + 4 < entries.len() {
+            self.button(
+                Rect(240, 467, 170, 52),
+                "Next",
+                p,
+                false,
+                Action::VacationPage(self.vacation_offset + 4),
+            );
+        }
+        self.button(
+            Rect(752, 467, 215, 52),
+            "Add vacation",
+            p,
+            true,
+            Action::EditVacation(None),
+        );
     }
 
     fn dashboard_tiles(&mut self, view: &View<'_>, p: &Palette, page: usize, interactive: bool) {
@@ -2672,6 +2961,8 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub vacations: Option<&'a Result<Vec<crate::vacation::Vacation>, String>>,
+    pub vacation_busy: bool,
     pub catalog_sources: &'a [crate::plugins::CatalogSource],
     pub diagnostics_message: Option<&'a str>,
     pub hardware: Option<&'a crate::advanced::State>,
@@ -2694,6 +2985,21 @@ pub struct View<'a> {
     pub history: Option<&'a Result<crate::thermostat::History, String>>,
     pub ambient: bool,
     pub location_results: Option<&'a Result<Vec<crate::plugins::Place>, String>>,
+}
+
+struct VacationEditor {
+    id: Option<crate::vacation::Id>,
+    dates: [String; 2],
+    end: bool,
+    error: Option<&'static str>,
+}
+
+fn vacation_label(seconds: i32) -> String {
+    #[cfg(target_os = "linux")]
+    if let Some([year, month, day, hour, minute]) = crate::device::vacation_date(seconds) {
+        return format!("{day:02}-{month:02}-{year} {hour:02}:{minute:02}");
+    }
+    seconds.to_string()
 }
 
 #[derive(serde::Deserialize)]

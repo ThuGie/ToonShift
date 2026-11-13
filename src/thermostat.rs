@@ -180,6 +180,7 @@ pub enum Command {
     HoldPreset(u8, HoldMode),
     SaveVacation(Option<crate::vacation::Id>, i32, i32),
     RemoveVacation(crate::vacation::Id),
+    Vacations,
 }
 
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -225,6 +226,7 @@ pub struct Update {
     pub completed: bool,
     pub schedule: Option<Result<Vec<crate::schedule::Slot>, String>>,
     pub presets: Option<Result<Vec<crate::presets::Preset>, String>>,
+    pub vacations: Option<Result<Vec<crate::vacation::Vacation>, String>>,
 }
 
 pub fn firmware_get(service: &str, query: &str) -> Result<String, String> {
@@ -283,8 +285,6 @@ pub fn status() -> Result<Status, String> {
 
 fn apply(command: Command) -> Result<(), String> {
     let query = match command {
-        Command::SaveVacation(id, start, end) => return crate::vacation::save(id, start, end),
-        Command::RemoveVacation(id) => return crate::vacation::remove(id),
         Command::Adjust(delta) => {
             let current = status()?.target().ok_or("Invalid thermostat setpoint")?;
             let target = (current + delta).clamp(600, 3000);
@@ -324,7 +324,10 @@ fn apply(command: Command) -> Result<(), String> {
         | Command::EditSchedule(_)
         | Command::EditScheduleAt(_, _)
         | Command::Presets
-        | Command::SavePreset(_) => return Ok(()),
+        | Command::SavePreset(_)
+        | Command::Vacations
+        | Command::SaveVacation(_, _, _)
+        | Command::RemoveVacation(_) => return Ok(()),
     };
     request(&query)?;
     Ok(())
@@ -368,6 +371,14 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
                 Some(Command::SavePreset(preset)) => Some(crate::presets::save(preset)),
                 _ => None,
             };
+            let vacations = match command {
+                Some(Command::Vacations) => Some(crate::vacation::load()),
+                Some(Command::SaveVacation(id, start, end)) => {
+                    Some(crate::vacation::save(id, start, end))
+                }
+                Some(Command::RemoveVacation(id)) => Some(crate::vacation::remove(id)),
+                _ => None,
+            };
             let heat = command.filter(|command| {
                 !matches!(
                     command,
@@ -376,15 +387,20 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
                         | Command::EditScheduleAt(_, _)
                         | Command::Presets
                         | Command::SavePreset(_)
+                        | Command::Vacations
+                        | Command::SaveVacation(_, _, _)
+                        | Command::RemoveVacation(_)
                 )
             });
             let result = heat.map(apply).transpose();
             let reply = work.take().and_then(|work| work.reply);
-            let completed = heat.is_some() && reply.is_none();
+            let from_api = reply.is_some();
+            let completed = heat.is_some() && !from_api;
             if let Some(reply) = reply {
-                let response = match (&schedule, &presets) {
-                    (Some(schedule), _) => schedule.as_ref().map(|_| ()).map_err(Clone::clone),
-                    (_, Some(presets)) => presets.as_ref().map(|_| ()).map_err(Clone::clone),
+                let response = match (&schedule, &presets, &vacations) {
+                    (Some(schedule), _, _) => schedule.as_ref().map(|_| ()).map_err(Clone::clone),
+                    (_, Some(presets), _) => presets.as_ref().map(|_| ()).map_err(Clone::clone),
+                    (_, _, Some(vacations)) => vacations.as_ref().map(|_| ()).map_err(Clone::clone),
                     _ => result.clone().map(|_| ()),
                 };
                 let _ = reply.send(response);
@@ -400,6 +416,7 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
                     completed,
                     schedule,
                     presets,
+                    vacations: if from_api { None } else { vacations },
                 })
                 .is_err()
             {

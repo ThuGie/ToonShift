@@ -17,6 +17,19 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Vacations" => "Vakanties",
+            "Start date" => "Begindatum",
+            "End date" => "Einddatum",
+            "Add vacation" => "Vakantie toevoegen",
+            "Remove this vacation?" => "Deze vakantie verwijderen?",
+            "Checking vacation schedule…" => "Vakantieschema controleren…",
+            "No vacations scheduled" => "Geen vakanties gepland",
+            "Enter two valid local dates and times." => {
+                "Voer twee geldige lokale datums en tijden in."
+            }
+            "Enter year, month, day, hour and minute (YYYYMMDDHHMM)." => {
+                "Voer jaar, maand, dag, uur en minuut in (JJJJMMDDUUMM)."
+            }
             "Hold indefinitely" => "Vasthouden",
             "Until next period" => "Tot volgende periode",
             "Hold until next period · Resume schedule" => {
