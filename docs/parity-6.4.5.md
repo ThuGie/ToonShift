@@ -28,7 +28,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | solar | Configured logger or external collector | Chart and widget implemented. No solar logger on reference unit. Verify with a configured installation. |
 | statusUsage | `happ_pwrusage`, `hcb_rrd` | Totals, data gaps, and local cost estimates implemented. Estimate input uses the normal and low electricity counters separately and the recorded gas total. Verify rate persistence and live readings on-device. |
 | strvSettings | Smart radiator valves and HVAC | Identify commissioning flow, then verify real valve operation. |
-| systemSettings | Firmware config, watchdog, boot | Stock fallback exercised. Update state, export, and separate preference/factory reset flows remain. |
+| systemSettings | Firmware config, watchdog, boot | Stock fallback exercised. Redacted diagnostics export and confirmed ToonShift preference reset are implemented. Verify both on-device. Firmware update state and factory reset remain. |
 | thermostat | `happ_thermstat` | Setpoint changes previously verified. HTTP and BoxTalk temperatures matched. Preset holds until the next period and indefinitely are implemented with mode read-back. Verify live transitions and add custom-end holds. Fault and reboot evidence remain. |
 | thermostatSettings | Program, states, calibration | Revision-checked schedule write and restore verified. Copy-day has host coverage. Dated vacation controls are available on the touchscreen and authenticated API with read-back. Live write verification and calibration remain. |
 | upsell | Tenant/legacy service | Determine active role and document any local equivalent. |

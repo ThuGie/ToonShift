@@ -620,6 +620,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::Theme(theme)) => next.theme = theme,
             Some(Action::Appearance(appearance)) => next.appearance = appearance,
             Some(Action::Language(language)) => next.language = language,
+            Some(Action::ResetPreferences) => {
+                if installing {
+                    error = Some(
+                        settings
+                            .language
+                            .translate("Wait for the plugin operation to finish.")
+                            .into(),
+                    );
+                    persist = false;
+                } else {
+                    next = plugins::Settings::default();
+                }
+            }
             Some(Action::ExportDiagnostics) => {
                 if !exporting_diagnostics {
                     exporting_diagnostics = true;
@@ -1019,6 +1032,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if persist {
             match next.save(root) {
                 Ok(()) => {
+                    if matches!(action, Some(Action::ResetPreferences)) {
+                        for metric in settings.meter_sources.keys() {
+                            telemetry.remove(metric);
+                        }
+                        ui = ui::Ui::new();
+                    }
                     settings = next;
                     error = None;
                     if matches!(action, Some(Action::SaveEnergyRate(_))) {

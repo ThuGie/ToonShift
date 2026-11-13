@@ -17,6 +17,14 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Reset preferences" => "Voorkeuren herstellen",
+            "Wait for the plugin operation to finish." => {
+                "Wacht tot de pluginbewerking is voltooid."
+            }
+            "Reset ToonShift preferences?" => "ToonShift-voorkeuren herstellen?",
+            "Restore default display, dashboard, plugin and energy preferences." => {
+                "Herstel de standaardvoorkeuren voor scherm, dashboard, plugins en energie."
+            }
             "Vacations" => "Vakanties",
             "Start date" => "Begindatum",
             "End date" => "Einddatum",

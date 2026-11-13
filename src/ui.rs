@@ -94,6 +94,9 @@ pub enum Action {
     EditEnergyRate(crate::energy::Rate, Option<u32>),
     SaveEnergyRate(crate::energy::Rate),
     ExportDiagnostics,
+    ConfirmResetPreferences,
+    CancelResetPreferences,
+    ResetPreferences,
     HeatingDetails,
     Display,
     Brightness(bool, i8),
@@ -196,6 +199,7 @@ pub struct Ui {
     editing: bool,
     selected_tile: Option<usize>,
     stock_confirm: bool,
+    reset_preferences: bool,
 }
 
 impl Ui {
@@ -243,6 +247,7 @@ impl Ui {
             editing: false,
             selected_tile: None,
             stock_confirm: false,
+            reset_preferences: false,
         }
     }
 
@@ -429,6 +434,14 @@ impl Ui {
             .rev()
             .find(|(rect, _)| rect.contains(x, y))?
             .1;
+        if self.reset_preferences
+            && !matches!(
+                action,
+                Action::ResetPreferences | Action::ConfirmResetPreferences
+            )
+        {
+            self.reset_preferences = false;
+        }
         if matches!(action, Action::Schedule | Action::Store | Action::Settings) {
             self.editing = false;
             self.selected_tile = None;
@@ -443,6 +456,8 @@ impl Ui {
             self.repository = None;
         }
         match action {
+            Action::ConfirmResetPreferences => self.reset_preferences = true,
+            Action::CancelResetPreferences => self.reset_preferences = false,
             Action::Vacations => {
                 self.page = Page::Vacations;
                 self.vacation_editor = None;
@@ -2685,6 +2700,33 @@ impl Ui {
     }
 
     fn settings(&mut self, view: &View<'_>, p: &Palette) {
+        if self.reset_preferences {
+            self.panel(Rect(32, 100, 960, 448), p.card, 26);
+            self.text(58, 165, "Reset ToonShift preferences?", 30, p.text, 965);
+            self.text(
+                58,
+                226,
+                "Restore default display, dashboard, plugin and energy preferences.",
+                22,
+                p.muted,
+                965,
+            );
+            self.button(
+                Rect(58, 454, 220, 55),
+                "Cancel",
+                p,
+                false,
+                Action::CancelResetPreferences,
+            );
+            self.button(
+                Rect(702, 454, 264, 55),
+                "Reset preferences",
+                p,
+                true,
+                Action::ResetPreferences,
+            );
+            return;
+        }
         self.panel(Rect(32, 100, 960, 400), p.card, 26);
         self.text(58, 153, "Appearance", 28, p.text, 966);
         self.text(638, 153, "Language", 28, p.text, 966);
@@ -2782,8 +2824,15 @@ impl Ui {
             false,
             Action::ExportDiagnostics,
         );
-        if let Some(message) = view.diagnostics_message {
-            self.text(379, 540, message, 18, p.muted, 990);
+        self.button(
+            Rect(669, 511, 323, 48),
+            "Reset preferences",
+            p,
+            false,
+            Action::ConfirmResetPreferences,
+        );
+        if let Some(message) = view.diagnostics_message.filter(|_| view.error.is_none()) {
+            self.text(32, 581, message, 18, p.muted, 990);
         }
     }
 
