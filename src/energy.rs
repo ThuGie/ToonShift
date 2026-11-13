@@ -327,6 +327,12 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
         .as_secs();
     let end = now - now % interval;
     let start = end.saturating_sub(window);
+    // Include a counter baseline even when the firmware treats "from" as exclusive.
+    let query_start = if period.flow() {
+        start
+    } else {
+        start.saturating_sub(interval)
+    };
     let count = window / interval + 2;
     let (primary, extra) = match (meter, period.flow()) {
         (Meter::Electricity, true) => ("elec_flow", None),
@@ -343,16 +349,23 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
         (Meter::Solar, false) => ("elec_solar_quantity", None),
         (Meter::Water, false) => ("water_quantity", None),
     };
-    let mut readings = samples(primary, archive, start, end, count)?;
+    let mut readings = samples(primary, archive, query_start, end, count)?;
     let mut partial = false;
     let mut tariff_usage = [None; 2];
     if !period.flow() {
         readings = changes(readings, interval);
         if let Some(extra) = extra {
-            let secondary = changes(samples(extra, archive, start, end, count)?, interval);
-            if secondary.is_empty() || readings.is_empty() {
+            let secondary = changes(samples(extra, archive, query_start, end, count)?, interval);
+            let has_readings = |samples: &Samples| {
+                samples
+                    .range((start + 1)..=end)
+                    .any(|(time, value)| (time - start).is_multiple_of(interval) && value.is_some())
+            };
+            let primary_available = has_readings(&readings);
+            let secondary_available = has_readings(&secondary);
+            if !primary_available || !secondary_available {
                 partial = true;
-                if readings.is_empty() {
+                if !primary_available {
                     readings = secondary;
                 }
             } else {
