@@ -92,6 +92,10 @@ fn connect(send: &Sender<(Metric, Option<f64>)>) -> io::Result<()> {
 
 pub type Readings = std::collections::HashMap<Metric, (f64, Instant)>;
 
+pub fn age(metric: Metric, values: &Readings) -> Option<Duration> {
+    values.get(&metric).map(|(_, received)| received.elapsed())
+}
+
 pub fn display(metric: Metric, values: &Readings) -> String {
     let lifetime = if metric == Metric::Gas { 7200 } else { 900 };
     match values

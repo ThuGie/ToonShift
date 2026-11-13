@@ -2575,9 +2575,18 @@ impl Ui {
         let room = view.status.map(|status| status.current_temp.as_str());
         self.text(285, 235, &temperature(room), 22, p.text, 473);
         self.text(490, 235, "Humidity", 19, p.muted, 704);
-        let humidity =
-            crate::telemetry::display(crate::plugins::Metric::RoomHumidity, view.telemetry);
-        self.text(705, 235, &humidity, 22, p.text, 965);
+        let metric = crate::plugins::Metric::RoomHumidity;
+        let humidity = crate::telemetry::display(metric, view.telemetry);
+        self.text(650, 235, &humidity, 22, p.text, 795);
+        if let Some(age) = crate::telemetry::age(metric, view.telemetry) {
+            let minutes = age.as_secs() / 60;
+            let freshness = if minutes == 0 {
+                self.language.translate("Just received").to_owned()
+            } else {
+                format!("{minutes} {}", self.language.translate("min ago"))
+            };
+            self.raw_text(798, 235, &freshness, 16, p.muted, 965);
+        }
         let history = match view.history {
             Some(Ok(history)) => history,
             Some(Err(error)) => {

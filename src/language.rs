@@ -17,6 +17,8 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Just received" => "Zojuist ontvangen",
+            "min ago" => "min geleden",
             "Recorded flow" => "Gemeten aanvoer",
             "Return" => "Retour",
             "Heating fault" => "Verwarmingsstoring",
