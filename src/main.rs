@@ -94,6 +94,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         vacations: None,
         vacation_busy: false,
         networks: None,
+        wifi_connection: None,
         network_message: None,
         catalog_message: None,
         catalog_sources: &[],
@@ -293,6 +294,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut vacations = None;
     let mut vacation_busy = false;
     let (network_sender, network_receiver) = std::sync::mpsc::channel();
+    let mut wifi_connection = None;
     let (join_sender, join_receiver) = std::sync::mpsc::channel();
     let mut joining = false;
     let mut network_message = None;
@@ -457,12 +459,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 dirty |= feeds.tick(&catalog, &settings, &telemetry, &mut readings);
             }
         }
-        if let Ok(result) = network_receiver.try_recv() {
+        if let Ok((result, connection)) = network_receiver.try_recv() {
             networks = Some(result);
+            wifi_connection = Some(connection);
             scanning = false;
             dirty = true;
         }
-        if let Ok(result) = join_receiver.try_recv() {
+        if let Ok((result, connection)) = join_receiver.try_recv() {
+            wifi_connection = Some(connection);
             joining = false;
             network_message = Some(match result {
                 Ok(()) => "Connected to the selected network.".to_owned(),
@@ -545,6 +549,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 vacations: vacations.as_ref(),
                 vacation_busy,
                 networks: networks.as_ref(),
+                wifi_connection: wifi_connection.as_ref(),
                 network_message: network_message.as_deref(),
                 catalog_message: catalog_message.as_deref(),
                 catalog_sources: &catalog_sources,
@@ -954,7 +959,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     });
                                     rows
                                 });
-                        let _ = sender.send(result);
+                        let _ = sender.send((result, network::connection()));
                     });
                 }
                 persist = false;
@@ -983,7 +988,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     network_message = Some("Applying Wi-Fi settings…".into());
                     let sender = join_sender.clone();
                     std::thread::spawn(move || {
-                        let _ = sender.send(network::join(form));
+                        let _ = sender.send((network::join(form), network::connection()));
                     });
                 }
                 persist = false;

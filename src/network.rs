@@ -11,6 +11,102 @@ pub struct Join {
     pub auth: String,
 }
 
+pub struct Connection {
+    pub ssid: String,
+    pub address: Option<std::net::Ipv4Addr>,
+    pub rssi: Option<i16>,
+}
+
+fn parse_connection(status: &str, signal: &str) -> Option<Connection> {
+    let field = |name| {
+        status
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find_map(|(key, value)| (key == name).then_some(value))
+    };
+    if field("wpa_state") != Some("COMPLETED") {
+        return None;
+    }
+    let ssid = field("ssid")?
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect();
+    let address = field("ip_address")
+        .and_then(|address| address.parse::<std::net::Ipv4Addr>().ok())
+        .filter(|address| !address.is_unspecified());
+    let rssi = signal
+        .lines()
+        .find_map(|line| line.strip_prefix("RSSI="))
+        .and_then(|value| value.parse::<i16>().ok())
+        .filter(|value| (-127..=0).contains(value));
+    Some(Connection {
+        ssid,
+        address,
+        rssi,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_association_without_an_address_and_filters_bad_signal() {
+        assert!(parse_connection("wpa_state=SCANNING\nssid=Home", "RSSI=-40").is_none());
+        let connection = parse_connection(
+            "wpa_state=COMPLETED\nssid=Home=2\nip_address=0.0.0.0\n",
+            "RSSI=999",
+        )
+        .unwrap();
+        assert_eq!(connection.ssid, "Home=2");
+        assert_eq!(connection.address, None);
+        assert_eq!(connection.rssi, None);
+        let connection = parse_connection(
+            "wpa_state=COMPLETED\nssid=Home\nip_address=192.168.1.10\n",
+            "RSSI=-57\n",
+        )
+        .unwrap();
+        assert_eq!(
+            connection.address,
+            Some(std::net::Ipv4Addr::new(192, 168, 1, 10))
+        );
+        assert_eq!(connection.rssi, Some(-57));
+    }
+}
+
+#[cfg(unix)]
+pub fn connection() -> std::io::Result<Option<Connection>> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let path = format!(
+        "/run/toonshift-wpa-info-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let socket = UnixDatagram::bind(&path)?;
+    let result = (|| {
+        socket.connect("/run/wpa_supplicant/wlan0")?;
+        socket.set_read_timeout(Some(Duration::from_millis(500)))?;
+        let query = |command: &[u8]| -> std::io::Result<String> {
+            socket.send(command)?;
+            let mut buffer = [0u8; 4096];
+            let size = socket.recv(&mut buffer)?;
+            Ok(String::from_utf8_lossy(&buffer[..size]).into_owned())
+        };
+        let status = query(b"STATUS")?;
+        let signal = query(b"SIGNAL_POLL").unwrap_or_default();
+        Ok(parse_connection(&status, &signal))
+    })();
+    let _ = std::fs::remove_file(path);
+    result
+}
+
 impl Join {
     fn validate(&self) -> Result<(), String> {
         if self.name.is_empty() || self.name.len() > 32 || self.name.chars().any(char::is_control) {

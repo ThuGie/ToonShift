@@ -17,6 +17,9 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Waiting for IP address" => "Wachten op IP-adres",
+            "Wi-Fi disconnected" => "Wi-Fi niet verbonden",
+            "Wi-Fi connection status unavailable" => "Wi-Fi-verbindingsstatus niet beschikbaar",
             "Reset preferences" => "Voorkeuren herstellen",
             "Wait for the plugin operation to finish." => {
                 "Wacht tot de pluginbewerking is voltooid."

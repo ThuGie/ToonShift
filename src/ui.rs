@@ -1061,6 +1061,35 @@ impl Ui {
             false,
             Action::Network,
         );
+        match view.wifi_connection {
+            Some(Ok(Some(connection))) => {
+                let address = connection.address.map_or_else(
+                    || self.language.translate("Waiting for IP address").to_owned(),
+                    |address| address.to_string(),
+                );
+                let signal = connection
+                    .rssi
+                    .map_or_else(String::new, |rssi| format!(" · {rssi} dBm"));
+                self.raw_text(
+                    56,
+                    195,
+                    &format!("{} · {address}{signal}", connection.ssid),
+                    19,
+                    p.text,
+                    966,
+                );
+            }
+            Some(Ok(None)) => self.text(56, 195, "Wi-Fi disconnected", 19, p.muted, 966),
+            Some(Err(_)) => self.text(
+                56,
+                195,
+                "Wi-Fi connection status unavailable",
+                19,
+                p.muted,
+                966,
+            ),
+            None => {}
+        }
         let networks: &[_] = match view.networks {
             Some(Ok(networks)) => networks,
             Some(Err(_)) => {
@@ -1075,9 +1104,9 @@ impl Ui {
         if matches!(view.networks, Some(Ok(networks)) if networks.is_empty()) {
             self.text(56, 233, "No nearby networks found", 23, p.muted, 970);
         }
-        let page = self.network_page.min(networks.len().saturating_sub(1) / 5);
-        for (row, network) in networks.iter().skip(page * 5).take(5).enumerate() {
-            let y = 204 + row * 49;
+        let page = self.network_page.min(networks.len().saturating_sub(1) / 4);
+        for (row, network) in networks.iter().skip(page * 4).take(4).enumerate() {
+            let y = 243 + row * 49;
             self.raw_text(56, y, &network.name, 23, p.text, 590);
             self.text(610, y, &network.signal, 20, p.muted, 790);
             self.button(
@@ -1085,7 +1114,7 @@ impl Ui {
                 "Join",
                 p,
                 false,
-                Action::ChooseNetwork(page * 5 + row),
+                Action::ChooseNetwork(page * 4 + row),
             );
         }
         if page > 0 {
@@ -1097,7 +1126,7 @@ impl Ui {
                 Action::NetworkPage(page - 1),
             );
         }
-        if (page + 1) * 5 < networks.len() {
+        if (page + 1) * 4 < networks.len() {
             self.button(
                 Rect(823, 430, 144, 44),
                 "Next",
@@ -3026,6 +3055,7 @@ pub struct View<'a> {
     pub schedule: Option<&'a Result<Vec<crate::schedule::Slot>, String>>,
     pub presets: Option<&'a Result<Vec<crate::presets::Preset>, String>>,
     pub networks: Option<&'a Result<Vec<NetworkRow>, String>>,
+    pub wifi_connection: Option<&'a std::io::Result<Option<crate::network::Connection>>>,
     pub network_message: Option<&'a str>,
     pub catalog_message: Option<&'a str>,
     pub readings: &'a HashMap<String, crate::feed::Reading>,
