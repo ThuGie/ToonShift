@@ -1817,15 +1817,32 @@ impl Ui {
         }
         self.panel(Rect(32, 100, 532, 448), p.card, 26);
         self.text(62, 154, "Room temperature", 25, p.muted, 535);
-        if let Some(status) = view.status.filter(|status| status.heat_requested()) {
-            let label = if status.connection == "0" {
-                "Heat requested · boiler link offline"
-            } else if status.burner_info == "1" {
-                "Boiler firing for heat"
-            } else {
-                "Heat requested · burner not confirmed"
+        if let Some(status) = view.status {
+            let (label, attention) = match (status.connection.as_str(), status.burner_info.as_str())
+            {
+                ("0", _) if status.heat_requested() => {
+                    ("Heat requested · boiler link offline", true)
+                }
+                ("0", _) => ("Boiler offline", true),
+                (_, _) if status.heating_error() == Some(true) || status.ot_comm_error == "1" => {
+                    ("Heating fault", true)
+                }
+                ("1", "1") => ("Boiler firing for heat", true),
+                ("1", "2" | "3") => ("Heating hot water", true),
+                ("1", "0") if status.heat_requested() => {
+                    ("Heat requested · burner not confirmed", true)
+                }
+                ("1", "0") => ("Heating idle", false),
+                _ => ("Boiler link unknown", false),
             };
-            self.text(63, 310, label, 20, p.accent, 535);
+            self.text(
+                63,
+                305,
+                label,
+                18,
+                if attention { p.accent } else { p.muted },
+                535,
+            );
         }
         self.text(
             55,
@@ -1837,7 +1854,7 @@ impl Ui {
         );
         self.text(63, 337, "Target temperature", 23, p.muted, 535);
         self.text(
-            145,
+            177,
             420,
             &temperature(view.status.map(|s| s.current_setpoint.as_str())),
             50,
@@ -1869,7 +1886,7 @@ impl Ui {
                 _ => ("Schedule off", false),
             };
             self.button(
-                Rect(62, 462, 472, 60),
+                Rect(62, 445, 472, 45),
                 label,
                 p,
                 enabled,
@@ -1878,7 +1895,7 @@ impl Ui {
         } else {
             self.text(
                 62,
-                501,
+                481,
                 if view.pending {
                     "Updating thermostat…"
                 } else {
@@ -1889,6 +1906,20 @@ impl Ui {
                 534,
             );
         }
+        self.button(
+            Rect(62, 496, 230, 44),
+            "Heating presets",
+            p,
+            false,
+            Action::Presets,
+        );
+        self.button(
+            Rect(302, 496, 232, 44),
+            "Heating and sensors",
+            p,
+            false,
+            Action::HeatingDetails,
+        );
 
         let pages = view.settings.dashboard_pages().max(1);
         self.dashboard_page = self.dashboard_page.min(pages - 1);
@@ -2198,6 +2229,23 @@ impl Ui {
             if editing {
                 self.buttons.push((rect, Action::Tile(index)));
             }
+        }
+        let occupied = view
+            .settings
+            .installed
+            .len()
+            .saturating_sub(page * count)
+            .min(count);
+        if interactive && !editing && occupied > 0 && occupied < count {
+            let x = 584 + (occupied % columns) * 210;
+            let y = 100 + (occupied / columns) * 203;
+            self.button(
+                Rect(x, y, width, 192),
+                "+ Add widget",
+                p,
+                false,
+                Action::Store,
+            );
         }
     }
 
@@ -2761,7 +2809,8 @@ impl Ui {
         for (row, plugin) in view.plugins.iter().skip(self.offset).take(4).enumerate() {
             let y = 150 + row * 88;
             self.panel(Rect(32, y, 960, 80), p.card, 16);
-            self.raw_text(54, y + 33, plugin.title(self.language), 23, p.text, 595);
+            self.raw_text(54, y + 25, plugin.title(self.language), 22, p.text, 595);
+            self.text(54, y + 48, &plugin.description, 16, p.muted, 595);
             if let Some(publisher) = &plugin.publisher {
                 let release = plugin
                     .installed_release
@@ -2769,14 +2818,12 @@ impl Ui {
                     .unwrap_or(&plugin.release);
                 self.raw_text(
                     54,
-                    y + 61,
+                    y + 68,
                     &format!("{publisher} · {release}"),
-                    17,
+                    14,
                     p.muted,
                     590,
                 );
-            } else {
-                self.text(54, y + 61, &plugin.description, 18, p.muted, 590);
             }
             let index = self.offset + row;
             let installed = view.settings.installed.contains(&plugin.id);

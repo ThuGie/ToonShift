@@ -17,6 +17,9 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Heating hot water" => "Warm water opwarmen",
+            "Heating idle" => "Verwarming in rust",
+            "+ Add widget" => "+ Widget toevoegen",
             "Live" => "Actueel",
             "Gaps and muted bars indicate missing data" => {
                 "Gaten en grijze balken tonen ontbrekende data"

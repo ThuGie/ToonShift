@@ -68,7 +68,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
     let plugins = plugins::catalog(root);
     let status = thermostat::Status {
         current_temp: "2140".into(),
-        current_setpoint: "2050".into(),
+        current_setpoint: "2200".into(),
         program_state: "1".into(),
         active_state: "1".into(),
         error_found: "0".into(),
@@ -113,7 +113,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
     ui.draw(&view);
     match page.as_deref() {
         Some("store") => {
-            ui.hit(600, 40);
+            ui.hit(670, 40);
         }
         Some("settings") => {
             ui.hit(750, 40);
