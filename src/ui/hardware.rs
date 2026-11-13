@@ -299,7 +299,7 @@ impl Ui {
         }
         match self.hardware.tab {
             Tab::Boiler => self.boiler_setup(state, p),
-            Tab::Meters | Tab::Devices => self.device_setup(state, p),
+            Tab::Meters | Tab::Devices => self.device_setup(state, view.settings, p),
         }
         if view.error.is_none() {
             if let Some(message) = state
@@ -403,7 +403,7 @@ impl Ui {
         }
     }
 
-    fn device_setup(&mut self, state: &State, p: &Palette) {
+    fn device_setup(&mut self, state: &State, settings: &crate::plugins::Settings, p: &Palette) {
         use HardwareAction as A;
         let inventory = match &state.devices {
             Some(Ok(inventory)) => inventory,
@@ -431,6 +431,78 @@ impl Ui {
             }
             self.raw_text(56, 222, &node.name, 28, p.text, 960);
             self.raw_text(56, 263, &node.kind, 19, p.muted, 960);
+            if node.meter {
+                for (index, label) in ["Electricity", "Gas", "Water"].into_iter().enumerate() {
+                    let channels: Vec<_> = node
+                        .channels
+                        .iter()
+                        .filter(|channel| channel.name == label)
+                        .collect();
+                    let unit = match label {
+                        "Gas" => "L/h",
+                        "Water" => "L/min",
+                        _ => "W",
+                    };
+                    let metric = match label {
+                        "Electricity" => Some(crate::plugins::Metric::Electricity),
+                        "Gas" => Some(crate::plugins::Metric::Gas),
+                        _ => None,
+                    };
+                    let selected = metric.and_then(|metric| settings.meter_sources.get(&metric));
+                    let flow = channels.iter().find_map(|channel| channel.flow);
+                    let summary = if channels.is_empty() {
+                        "No channel reported".to_owned()
+                    } else if let Some(flow) = flow {
+                        format!("{flow:.1} {unit}")
+                    } else if channels.iter().any(|channel| channel.total.is_some()) {
+                        "Counter available".to_owned()
+                    } else {
+                        "Channel present · no reading".to_owned()
+                    };
+                    self.text(56, 306 + index * 45, label, 22, p.text, 328);
+                    self.text(342, 306 + index * 45, &summary, 21, p.muted, 700);
+                    if let Some(metric) = metric {
+                        let row = 277 + index * 45;
+                        if node
+                            .channels
+                            .iter()
+                            .any(|channel| channel.name == label && selected == Some(&channel.id))
+                        {
+                            self.button(
+                                Rect(708, row, 255, 39),
+                                "Use firmware default",
+                                p,
+                                true,
+                                Action::AutomaticMeter(metric),
+                            );
+                        } else if let Some(channel) = channels
+                            .iter()
+                            .find(|channel| channel.flow.is_some())
+                            .or_else(|| channels.first())
+                        {
+                            if let Some(global_index) = inventory
+                                .nodes
+                                .iter()
+                                .flat_map(|node| &node.channels)
+                                .position(|entry| entry.id == channel.id)
+                            {
+                                self.button(
+                                    Rect(708, row, 255, 39),
+                                    "Use this adapter",
+                                    p,
+                                    false,
+                                    Action::MeterSource(metric, global_index),
+                                );
+                            }
+                        }
+                    }
+                }
+                if !state.busy {
+                    self.hardware_button(Rect(760, 477, 200, 50), "Rename", p, false, A::Rename);
+                }
+                self.hardware_button(Rect(56, 477, 200, 50), "Back", p, false, A::Cancel);
+                return;
+            }
             if !state.busy {
                 self.hardware_button(Rect(56, 301, 210, 55), "Rename", p, false, A::Rename);
                 if node.switch {

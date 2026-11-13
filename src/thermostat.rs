@@ -99,6 +99,20 @@ impl Status {
     pub fn target(&self) -> Option<i32> {
         self.current_setpoint.parse().ok()
     }
+
+    pub fn heat_requested(&self) -> bool {
+        self.target()
+            .zip(self.current_temp.parse::<i32>().ok())
+            .is_some_and(|(target, room)| target > room)
+            && (self
+                .current_modulation_level
+                .parse::<u8>()
+                .is_ok_and(|level| level > 0)
+                || self
+                    .current_internal_boiler_setpoint
+                    .parse::<i32>()
+                    .is_ok_and(|target| target > 6))
+    }
 }
 
 #[derive(Clone, Copy)]

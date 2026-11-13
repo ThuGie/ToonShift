@@ -34,3 +34,11 @@ For separate downloads, include `"artifact": {"path":"plugins/yourname-widget.js
 The generic `https_json` source accepts an HTTPS URL template, a numeric JSON pointer, suffix and precision, and optional detail labels, range rows, locations, and location-search schema. Weather's Open-Meteo endpoints, field mappings, and English and Dutch condition labels are in its own package. ToonShift runs the same renderer and fetcher for each package. HTTPS feeds use certificate verification and a pinned public IPv4 connection for each request.
 
 The `box_talk` source reads local firmware telemetry. Supported metrics are `room_humidity`, `room_temperature`, `electricity`, and `gas`. The `meter_archive` source displays recorded usage over the last 24 hours from the selected firmware meter archive. Electricity and gas need meter data. The solar tile can receive readings from an external `file` source, and the Energy screen uses the firmware's solar archive where present.
+
+## Executable plugins
+
+A package with `source: "wasm"` runs a WebAssembly module in a Wasmi interpreter. The package carries the module bytes as hexadecimal in the `wasm` field and can request a supported read-only telemetry metric with `metric`. The module receives that metric's formatted UTF-8 value at address zero. A module with no metric receives empty input.
+
+Export linear memory as `memory` and a function `render(i32) -> i64`. The argument is the input byte length. Return the output address in the high 32 bits and the UTF-8 byte length in the low 32 bits. The output becomes the tile's text. Execution uses 100,000 fuel, at most 128 KiB of linear memory, and at most 256 output bytes. The host supplies no imports, filesystem, network, or heating controls. The data worker runs plugins outside the touchscreen loop. A trap produces an unavailable tile.
+
+The Room summary package contains executable code, with its WAT source in the plugin repository. Weather and existing declarative feeds retain their existing package interface.

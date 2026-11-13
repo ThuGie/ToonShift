@@ -5,6 +5,7 @@ mod energy;
 mod feed;
 mod language;
 mod network;
+mod plugin_runtime;
 mod plugins;
 mod presets;
 mod schedule;
@@ -19,10 +20,22 @@ mod device;
 
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
-    let result = if args.next().as_deref() == Some("--preview") {
-        preview(args).map_err(Into::into)
-    } else {
-        run()
+    let result = match args.next().as_deref() {
+        Some("--preview") => preview(args).map_err(Into::into),
+        Some("--probe-plugin-code") => (|| {
+            let path = args.next().ok_or("Expected a plugin package path")?;
+            let input = args.next().unwrap_or_default();
+            let package: plugins::Plugin = serde_json::from_slice(&std::fs::read(path)?)?;
+            let code = plugin_runtime::decode(
+                package
+                    .wasm
+                    .as_deref()
+                    .ok_or("Package has no executable code")?,
+            )?;
+            println!("{}", plugin_runtime::render(&code, input.as_bytes())?);
+            Ok(())
+        })(),
+        _ => run(),
     };
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -239,6 +252,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut readings = std::collections::HashMap::new();
     let events = telemetry::start();
     let mut telemetry = telemetry::Readings::new();
+    let (meter_sender, meter_receiver) =
+        std::sync::mpsc::channel::<(advanced::MeterSources, Result<advanced::MeterFlows, String>)>(
+        );
+    let mut meter_busy = false;
+    let mut next_meter_poll = std::time::Instant::now();
     let mut status = None;
     let mut schedule = None;
     let mut presets = None;
@@ -283,6 +301,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut feed_poll = std::time::Instant::now();
     let mut hardware = advanced::State::new();
     loop {
+        if let Ok((sources, result)) = meter_receiver.try_recv() {
+            meter_busy = false;
+            if sources == settings.meter_sources {
+                match result {
+                    Ok(values) => {
+                        for (metric, value) in values {
+                            if let Some(value) = value {
+                                telemetry.insert(metric, (value, std::time::Instant::now()));
+                            } else {
+                                telemetry.remove(&metric);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        for metric in sources.keys() {
+                            telemetry.remove(metric);
+                        }
+                    }
+                }
+                dirty = true;
+            }
+        }
+        if !settings.meter_sources.is_empty()
+            && !meter_busy
+            && std::time::Instant::now() >= next_meter_poll
+        {
+            next_meter_poll = std::time::Instant::now() + Duration::from_secs(10);
+            meter_busy = true;
+            let sources = settings.meter_sources.clone();
+            let sender = meter_sender.clone();
+            std::thread::spawn(move || {
+                let result = advanced::meter_flows(&sources);
+                let _ = sender.send((sources, result));
+            });
+        }
         if let Ok((id, result)) = install_receiver.try_recv() {
             installing = false;
             catalog_message = Some(match result {
@@ -340,6 +393,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             dirty = true;
         }
         for (metric, value) in events.try_iter() {
+            if settings.meter_sources.contains_key(&metric) {
+                continue;
+            }
             if let Some(value) = value {
                 telemetry.insert(metric, (value, std::time::Instant::now()));
                 dirty = true;
@@ -350,7 +406,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if feed_poll.elapsed() >= Duration::from_millis(250) {
             feed_poll = std::time::Instant::now();
             if let Some(feeds) = &mut feeds {
-                dirty |= feeds.tick(&catalog, &settings, &mut readings);
+                dirty |= feeds.tick(&catalog, &settings, &telemetry, &mut readings);
             }
         }
         if let Ok(result) = network_receiver.try_recv() {
@@ -448,6 +504,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut next = settings.clone();
         let mut persist = true;
         match ui.gesture(gesture.from, gesture.to, settings.installed.len()) {
+            Some(Action::MeterSource(metric, index)) => {
+                if let Some(channel) = hardware
+                    .devices
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .and_then(|devices| {
+                        devices
+                            .nodes
+                            .iter()
+                            .flat_map(|node| &node.channels)
+                            .nth(index)
+                    })
+                {
+                    next.meter_sources.insert(metric, channel.id.clone());
+                    telemetry.remove(&metric);
+                    next_meter_poll = std::time::Instant::now();
+                } else {
+                    persist = false;
+                }
+            }
+            Some(Action::AutomaticMeter(metric)) => {
+                next.meter_sources.remove(&metric);
+                telemetry.remove(&metric);
+            }
             Some(Action::Hardware(action)) => {
                 ui.hardware_action(&mut hardware, action);
                 persist = false;

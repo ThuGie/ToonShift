@@ -37,6 +37,8 @@ enum Page {
 
 #[derive(Clone, Copy)]
 pub enum Action {
+    MeterSource(crate::plugins::Metric, usize),
+    AutomaticMeter(crate::plugins::Metric),
     Hardware(HardwareAction),
     Home,
     Schedule,
@@ -1403,6 +1405,16 @@ impl Ui {
     fn home(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 532, 448), p.card, 26);
         self.text(62, 154, "Room temperature", 25, p.muted, 535);
+        if let Some(status) = view.status.filter(|status| status.heat_requested()) {
+            let label = if status.connection == "0" {
+                "Heat requested · boiler link offline"
+            } else if status.burner_info == "1" {
+                "Boiler firing for heat"
+            } else {
+                "Heat requested · burner not confirmed"
+            };
+            self.text(63, 310, label, 20, p.accent, 535);
+        }
         self.text(
             55,
             270,
@@ -2145,7 +2157,7 @@ fn plugin_value(plugin: &Plugin, view: &View<'_>) -> String {
             || "Unavailable".into(),
             |metric| crate::telemetry::display(metric, view.telemetry),
         ),
-        Source::HttpsJson | Source::MeterArchive => view
+        Source::HttpsJson | Source::MeterArchive | Source::Wasm => view
             .readings
             .get(&plugin.id)
             .map_or_else(|| "Loading…".into(), |reading| reading.value.clone()),

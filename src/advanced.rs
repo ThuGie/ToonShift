@@ -31,6 +31,58 @@ pub struct Node {
     pub connected: Option<bool>,
     pub meter: bool,
     pub switch: bool,
+    pub channels: Vec<MeterChannel>,
+}
+
+#[derive(Clone)]
+pub struct MeterChannel {
+    pub id: String,
+    pub name: &'static str,
+    pub flow: Option<f64>,
+    pub total: Option<f64>,
+}
+
+fn channel(entry: &Value, name: &'static str, flow: &str, total: &str) -> Option<MeterChannel> {
+    if entry.get(flow).is_none() && entry.get(total).is_none() {
+        return None;
+    }
+    let number = |key: &str| {
+        entry[key]
+            .as_f64()
+            .or_else(|| entry[key].as_str()?.parse().ok())
+            .filter(|value: &f64| value.is_finite())
+    };
+    Some(MeterChannel {
+        id: entry["uuid"].as_str()?.to_owned(),
+        name,
+        flow: number(flow),
+        total: number(total),
+    })
+}
+
+pub type MeterSources = std::collections::HashMap<crate::plugins::Metric, String>;
+pub type MeterFlows = Vec<(crate::plugins::Metric, Option<f64>)>;
+
+pub fn meter_flows(sources: &MeterSources) -> Result<MeterFlows, String> {
+    use crate::plugins::Metric;
+    let inventory = zwave_nodes()?;
+    Ok(sources
+        .iter()
+        .filter_map(|(&metric, id)| {
+            let kind = match metric {
+                Metric::Electricity => "Electricity",
+                Metric::Gas => "Gas",
+                _ => return None,
+            };
+            let value = inventory
+                .iter()
+                .filter(|node| node.connected == Some(true))
+                .flat_map(|node| &node.channels)
+                .find(|channel| channel.id == *id && channel.name == kind)
+                .and_then(|channel| channel.flow);
+            Some((metric, value))
+        })
+        .collect())
 }
 
 pub struct Devices {
@@ -277,6 +329,25 @@ fn zwave_response(body: &str) -> Result<Value, String> {
 }
 
 pub fn devices() -> Result<Devices, String> {
+    let nodes = zwave_nodes()?;
+    let p1_sources = thermostat::firmware_get("hcb_config", "action=getDeviceList.json")
+        .ok()
+        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+        .and_then(|value| {
+            value["device"].as_object().map(|devices| {
+                devices
+                    .values()
+                    .filter(|entry| {
+                        entry["package"] == "hdrv_p1" && entry["type"] == "connection_device"
+                    })
+                    .count()
+            })
+        })
+        .unwrap_or(0);
+    Ok(Devices { nodes, p1_sources })
+}
+
+fn zwave_nodes() -> Result<Vec<Node>, String> {
     let inventory = zwave("action=getDevices.json", 3)?;
     let entries = inventory.as_object().ok_or("Invalid Z-Wave inventory")?;
     let mut nodes = Vec::new();
@@ -297,33 +368,44 @@ pub fn devices() -> Result<Devices, String> {
             _ => None,
         };
         if let Some(uuid) = entry["uuid"].as_str() {
+            let prefix = format!("{key}.");
+            let channels = entries
+                .iter()
+                .filter(|(candidate, _)| *candidate == key || candidate.starts_with(&prefix))
+                .flat_map(|(_, endpoint)| {
+                    [
+                        channel(
+                            endpoint,
+                            "Electricity",
+                            "CurrentElectricityFlow",
+                            "CurrentElectricityQuantity",
+                        ),
+                        channel(endpoint, "Gas", "CurrentGasFlow", "CurrentGasQuantity"),
+                        channel(
+                            endpoint,
+                            "Water",
+                            "CurrentWaterFlow",
+                            "CurrentWaterQuantity",
+                        ),
+                    ]
+                    .into_iter()
+                    .flatten()
+                })
+                .collect();
             nodes.push(Node {
                 id: uuid.into(),
                 name: name.into(),
                 kind: kind.into(),
                 connected,
                 meter: kind.contains("METER"),
+                channels,
                 switch: classes
                     .split_whitespace()
                     .any(|v| v.eq_ignore_ascii_case("25")),
             });
         }
     }
-    let p1_sources = thermostat::firmware_get("hcb_config", "action=getDeviceList.json")
-        .ok()
-        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
-        .and_then(|value| {
-            value["device"].as_object().map(|devices| {
-                devices
-                    .values()
-                    .filter(|entry| {
-                        entry["package"] == "hdrv_p1" && entry["type"] == "connection_device"
-                    })
-                    .count()
-            })
-        })
-        .unwrap_or(0);
-    Ok(Devices { nodes, p1_sources })
+    Ok(nodes)
 }
 
 pub fn rename(node: Node, name: String) -> Result<(), String> {

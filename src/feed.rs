@@ -2,7 +2,7 @@ use crate::plugins::{Feed, LocationSearch, Place, Plugin, Settings, Source};
 use crate::{energy, language::Language};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -25,10 +25,11 @@ type ResultRow = (Key, Result<Reading, String>);
 enum Task {
     Feed(Box<Feed>, Place, Language),
     Meter(energy::Meter),
+    Wasm(String, Vec<u8>),
 }
 
 pub struct Feeds {
-    requests: Sender<(Key, Task)>,
+    requests: mpsc::SyncSender<(Key, Task)>,
     replies: Receiver<ResultRow>,
     due: HashMap<Key, Instant>,
 }
@@ -58,11 +59,18 @@ pub fn place<'a>(plugin: &'a Plugin, settings: &'a Settings) -> Option<&'a Place
 impl Feeds {
     pub fn new(root: &Path) -> std::io::Result<Self> {
         let ca = crate::download::trust(root)?;
-        let (requests, jobs) = mpsc::channel::<(Key, Task)>();
+        let (requests, jobs) = mpsc::sync_channel::<(Key, Task)>(32);
         let (results, replies) = mpsc::channel();
         std::thread::spawn(move || {
             for (key, task) in jobs {
                 let value = match task {
+                    Task::Wasm(code, input) => crate::plugin_runtime::decode(&code)
+                        .and_then(|code| crate::plugin_runtime::render(&code, &input))
+                        .map(|value| Reading {
+                            value,
+                            detail: String::new(),
+                            rows: Vec::new(),
+                        }),
                     Task::Feed(feed, place, language) => fetch(&ca, &feed, &place, language),
                     Task::Meter(meter) => {
                         energy::load(meter, energy::Period::Day).map(|chart| Reading {
@@ -95,13 +103,16 @@ impl Feeds {
         &mut self,
         catalog: &[Plugin],
         settings: &Settings,
+        telemetry: &crate::telemetry::Readings,
         values: &mut HashMap<String, Reading>,
     ) -> bool {
         let now = Instant::now();
         let mut redraw = false;
         let active = |plugin: &&Plugin| {
-            matches!(plugin.source, Source::HttpsJson | Source::MeterArchive)
-                && settings.installed.contains(&plugin.id)
+            matches!(
+                plugin.source,
+                Source::HttpsJson | Source::MeterArchive | Source::Wasm
+            ) && settings.installed.contains(&plugin.id)
         };
         let key = |plugin: &Plugin| {
             let options = place(plugin, settings).map_or_else(String::new, |place| {
@@ -133,7 +144,17 @@ impl Feeds {
             if !self.due.contains_key(&result_key) {
                 continue;
             }
-            let retry = if result.is_ok() { 900 } else { 90 };
+            let retry = if result.is_ok() {
+                if catalog.iter().any(|plugin| {
+                    plugin.id == result_key.0 && matches!(plugin.source, Source::Wasm)
+                }) {
+                    15
+                } else {
+                    900
+                }
+            } else {
+                90
+            };
             self.due
                 .insert(result_key.clone(), now + Duration::from_secs(retry));
             let reading = match result {
@@ -165,10 +186,19 @@ impl Feeds {
                             },
                         ),
                         Source::MeterArchive => plugin.meter.map(Task::Meter),
+                        Source::Wasm => plugin.wasm.clone().map(|code| {
+                            let input = plugin
+                                .metric
+                                .map(|metric| crate::telemetry::display(metric, telemetry))
+                                .unwrap_or_default();
+                            Task::Wasm(code, input.into_bytes())
+                        }),
                         _ => None,
                     };
                 if let Some(task) = task {
-                    let _ = self.requests.send((key, task));
+                    if self.requests.try_send((key.clone(), task)).is_err() {
+                        self.due.insert(key, now + Duration::from_secs(5));
+                    }
                 }
             }
         }

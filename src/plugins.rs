@@ -15,9 +15,10 @@ pub enum Source {
     HttpsJson,
     BoxTalk,
     MeterArchive,
+    Wasm,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Hash, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Metric {
     RoomHumidity,
@@ -40,6 +41,7 @@ pub struct Plugin {
     pub feed: Option<Feed>,
     pub metric: Option<Metric>,
     pub meter: Option<crate::energy::Meter>,
+    pub wasm: Option<String>,
     pub artifact: Option<Artifact>,
     #[serde(skip)]
     pub installed_release: Option<String>,
@@ -307,6 +309,11 @@ fn valid_plugin(plugin: &Plugin) -> bool {
         && (plugin.artifact.is_some()
             || ((!matches!(plugin.source, Source::BoxTalk) || plugin.metric.is_some())
                 && (!matches!(plugin.source, Source::MeterArchive) || plugin.meter.is_some())
+                && (!matches!(plugin.source, Source::Wasm)
+                    || plugin
+                        .wasm
+                        .as_ref()
+                        .is_some_and(|code| crate::plugin_runtime::decode(code).is_ok()))
                 && (!matches!(plugin.source, Source::HttpsJson)
                     || plugin.feed.as_ref().is_some_and(|feed| {
                         (1..=24).contains(&feed.places.len())
@@ -381,6 +388,7 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                         plugin.feed = installed.feed;
                         plugin.metric = installed.metric;
                         plugin.meter = installed.meter;
+                        plugin.wasm = installed.wasm;
                         plugin.text = installed.text;
                         plugin.source = installed.source;
                     }
@@ -422,6 +430,7 @@ pub enum Appearance {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
+    pub meter_sources: crate::advanced::MeterSources,
     pub theme: Theme,
     pub appearance: Appearance,
     pub installed: Vec<String>,
@@ -439,6 +448,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: Theme::Midnight,
+            meter_sources: Default::default(),
             appearance: Appearance::Auto,
             installed: vec!["clock".into(), "boiler".into()],
             locations: Default::default(),

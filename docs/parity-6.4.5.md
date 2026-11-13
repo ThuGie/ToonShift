@@ -13,7 +13,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | controlPanel | Tenant registration | Map visible stock controls and their firmware contracts. |
 | customerService | Tenant and legacy services | Map visible support actions. Add local support and redacted diagnostics export. |
 | domesticHotWater | Thermostat DHW BoxTalk actions | Enabled flag, target, and range read verified. Controls need a DHW-capable appliance. |
-| eMetersSettings | P1, Z-Wave, power usage services | Counter archives and meter inventory verified. Z-Wave setup starts from Advanced. Wired meter commissioning uses stock setup. |
+| eMetersSettings | P1, Z-Wave, power usage services | Counter archives and meter inventory verified. Advanced shows each Z-Wave adapter's electricity, gas, and water endpoint status. A local source override selects electricity and gas independently for live tiles. Physical sensor commissioning, firmware archive routing, and wired P1 setup still use the stock installer. |
 | fiona | Tenant-specific registration | Identify visible role before selecting a local equivalent. |
 | graph | `hcb_rrd` | Electricity and gas daily charts returned readings on the reference unit. Validate live units and timestamps with an active meter. |
 | heatRecovery | `happ_hvac`, configured VHR | Reference unit reported no VHR. Verify on a configured unit. |
@@ -42,6 +42,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 - The BoxTalk thermostat action namespace is `urn:hcb-hae-com:serviceId:Thermostat`. `GetTempOffset` returns `offset` in °C and `measuredTemp` in hundredths of °C. `GetBoilerType` returns `ot`. `GetDhwSettings` returns the enabled flag, target, and limits. `GetHolidays` returned an empty list. The `SetHoliday` handler takes `entryId`, `startTimeT`, `endTimeT`, and `setpoint`. Vacation writes need verification before exposing them.
 - `hcb_config` exposes the saved wireless interface under `iface-wlan0`. Its payload can contain credentials. Keep the payload out of logs and public fixtures.
 - A configured boiler type does not prove that an appliance is connected. The reference unit reported its boiler offline.
+- In the last live heating trace, the firmware received a 24.5°C setpoint against a 22.6°C room reading. It requested a 90°C internal boiler target and 100% modulation while reporting `connection=0` and `otCommError=1`. The thermostat daemon owned the native UART. The physical link and both protocol modes still need an on-device test. FreeToon's optional serial proxy forwards the wired adapter traffic and adds telemetry. Its active wireless route requires a separately configured OTGW.
 - Advanced setup detected one registered Z-Wave meter and one configured meter source. Touchscreen inclusion started and the controller returned cancellation and stop acknowledgements. No physical device was added or removed during that test.
 
 ## Candidate checks on the reference Toon
