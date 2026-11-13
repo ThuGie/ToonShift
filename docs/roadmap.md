@@ -13,7 +13,7 @@ The target is a fast, local-first replacement for the entire Toon 2 touchscreen 
 | Accessories | Firmware API inventory | Z-Wave inclusion/exclusion, node health, smart plugs, Hue, smoke detectors, configuration and recovery |
 | Device | Build, SSH install, stock recovery | Setup wizard, locale, clock and timezone, offline/update status, settings export/import, logs, factory-reset workflow and signed update/rollback |
 | Services | Local-first UI | Identify weather, messages, service and cloud features that need supported equivalents. Document per-region availability and privacy choices |
-| Remote control | Bearer API over SSH, including program, presets, and energy | Android client, pairing, per-client permissions, token revocation, encrypted local HTTPS transport, and event streaming |
+| Remote control | Bearer API over SSH, including program, preset writes, energy, capability reads, and status event streaming | Android client, pairing, per-client permissions, token revocation, and encrypted local HTTPS transport |
 
 ## 1. Make the current UI measurable
 

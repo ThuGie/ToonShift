@@ -18,17 +18,22 @@ curl -H "Authorization: Bearer $TOONSHIFT_TOKEN" http://127.0.0.1:18082/v1/statu
 | Method and path | JSON body | Result |
 | --- | --- | --- |
 | `GET /v1/status` | — | `currentTemp`, `currentSetpoint`, `programState`, `burnerInfo`, `connection`, `nextSetpoint`, `nextTime` as strings |
+| `GET /v1/events` | — | Authenticated Server-Sent Events with `status` or `unavailable` events |
 | `PUT /v1/setpoint` | `{"centi_celsius":2050}` | Sets the target to 20.50°C. Range is 600–3000 in hundredths of a degree Celsius |
 | `PUT /v1/schedule` | `{"enabled":true}` | Enables or disables the stored program |
 | `GET /v1/program` | — | Weekly periods with `start` and `end` as minute offsets from Sunday midnight and numeric `preset` |
 | `GET /v1/program?revision=1` | — | Returns the periods and their revision token |
 | `PUT /v1/program` | `{"revision":"0123456789abcdef","edit":{"operation":"copy_day","source":0,"days":62}}` | Applies a revision-checked edit. Weekday bits run from Sunday (1) to Saturday (64). A stale revision returns 409 |
 | `GET /v1/presets` | — | Preset ID, temperature in hundredths of °C, and hot-water setting |
+| `PUT /v1/presets` | `{"id":1,"temperature":1950,"hot_water":true}` | Saves a preset through the touchscreen thermostat worker |
+| `GET /v1/capabilities` | — | Boiler protocol and link state, hot-water capabilities when present, and configured meter adapters and channels. Unavailable subsystems are null |
 | `GET /v1/diagnostics` | — | Firmware version and BoxTalk temperature offset, measured temperature, and boiler/DHW configuration |
 | `PUT /v1/preset` | `{"id":1}` | Selects Comfort (0), Home (1), Sleep (2), Away (3), or Vacation (4) |
 | `GET /v1/energy?meter=electricity&period=day` | — | Time bounds, chart buckets, unit, recorded total, and a flag for incomplete readings |
 
 Success returns HTTP 200. Writes return `{"result":"ok"}` when the firmware acknowledges the command. Read status to confirm the effective state. Missing or invalid tokens get 401, unknown routes get 404, invalid input gets 422, firmware write failures get 502, service failures get 503, and a 504 means the write outcome is unknown.
+
+The event stream sends the latest full status upon connection and again when status changes. `unavailable` carries an empty JSON object. The stream sends keepalive comments every ten seconds of inactivity, closes after about five minutes, and supports four simultaneous subscriptions. Reconnect using the bearer token to get the current snapshot. The stream does not retain historical events.
 
 Rotate the token by moving the token file out of the device's application directory, restarting ToonShift, and provisioning the new token to clients. The existing token remains active until the process restarts. Keep the SSH tunnel local to the client and use SSH for transport encryption. This API does not configure the firmware's separate web listeners.
 

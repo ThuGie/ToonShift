@@ -1,26 +1,67 @@
 use crate::thermostat::{self, Command, Work};
 use serde::Deserialize;
 use serde_json::{json, Value};
+#[cfg(target_os = "linux")]
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+#[cfg(target_os = "linux")]
+use std::net::TcpListener;
+use std::net::TcpStream;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
 const LISTEN: &str = "127.0.0.1:10082";
 
-pub fn start(root: &Path, commands: Sender<Work>) -> io::Result<()> {
+#[derive(Default)]
+pub struct Events {
+    snapshot: Mutex<(u64, Option<Value>)>,
+    changed: Condvar,
+}
+
+impl Events {
+    pub fn publish(&self, status: Option<&thermostat::Status>) {
+        let payload = status.map(|status| json!(status));
+        let mut snapshot = self.snapshot.lock().unwrap();
+        if snapshot.1 != payload {
+            snapshot.0 += 1;
+            snapshot.1 = payload;
+            self.changed.notify_all();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn start(root: &Path, commands: Sender<Work>, events: Arc<Events>) -> io::Result<()> {
     let token = load_token(root)?;
     let listener = TcpListener::bind(LISTEN)?;
+    let token = Arc::new(token);
+    let clients = Arc::new(Slots::new(12));
+    let subscribers = Arc::new(Slots::new(4));
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             match connection {
                 Ok(mut stream) => {
-                    if let Err(error) = serve(&mut stream, &token, &commands) {
-                        eprintln!("ToonShift API request failed: {error}");
-                    }
+                    let Some(slot) = clients.take() else { continue };
+                    let (token, commands, events, subscribers) = (
+                        token.clone(),
+                        commands.clone(),
+                        events.clone(),
+                        subscribers.clone(),
+                    );
+                    std::thread::spawn(move || {
+                        let _slot = slot;
+                        if let Err(error) =
+                            serve(&mut stream, &token, &commands, &events, &subscribers)
+                        {
+                            eprintln!("ToonShift API request failed: {error}");
+                        }
+                    });
                 }
                 Err(error) => eprintln!("ToonShift API connection failed: {error}"),
             }
@@ -29,6 +70,31 @@ pub fn start(root: &Path, commands: Sender<Work>) -> io::Result<()> {
     Ok(())
 }
 
+struct Slots(std::sync::atomic::AtomicUsize);
+
+impl Slots {
+    fn new(count: usize) -> Self {
+        Self(std::sync::atomic::AtomicUsize::new(count))
+    }
+
+    fn take(self: &Arc<Self>) -> Option<Slot> {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.0
+            .try_update(Relaxed, Relaxed, |count| count.checked_sub(1))
+            .ok()?;
+        Some(Slot(self.clone()))
+    }
+}
+
+struct Slot(Arc<Slots>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0 .0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn load_token(root: &Path) -> io::Result<String> {
     let path = root.join("api-token");
     if !path.exists() {
@@ -65,15 +131,62 @@ fn equal_secret(left: &[u8], right: &[u8]) -> bool {
             == 0
 }
 
-fn serve(stream: &mut TcpStream, token: &str, commands: &Sender<Work>) -> io::Result<()> {
+fn serve(
+    stream: &mut TcpStream,
+    token: &str,
+    commands: &Sender<Work>,
+    events: &Events,
+    subscribers: &Arc<Slots>,
+) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut request = BufReader::new(stream.try_clone()?);
     let (status, response) = handle(&mut request, token, commands)?;
+    if status == "event-stream" {
+        if let Some(_slot) = subscribers.take() {
+            return stream_events(stream, events);
+        }
+        return send_json(
+            stream,
+            "503 Service Unavailable",
+            json!({"error":"Event stream capacity reached"}),
+        );
+    }
+    send_json(stream, status, response)
+}
+
+fn send_json(stream: &mut TcpStream, status: &str, response: Value) -> io::Result<()> {
     let body = response.to_string();
     write!(stream,
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()
     )
+}
+
+fn stream_events(stream: &mut impl Write, events: &Events) -> io::Result<()> {
+    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nretry: 2000\n\n")?;
+    let until = Instant::now() + Duration::from_secs(300);
+    let mut seen = None;
+    while Instant::now() < until {
+        let snapshot = events.snapshot.lock().unwrap();
+        let (snapshot, _) = events
+            .changed
+            .wait_timeout_while(snapshot, Duration::from_secs(10), |snapshot| {
+                seen == Some(snapshot.0)
+            })
+            .unwrap();
+        let (revision, payload) = snapshot.clone();
+        drop(snapshot);
+        if seen == Some(revision) {
+            stream.write_all(b": keepalive\n\n")?;
+        } else {
+            seen = Some(revision);
+            match payload {
+                Some(status) => write!(stream, "event: status\ndata: {status}\n\n")?,
+                None => stream.write_all(b"event: unavailable\ndata: {}\n\n")?,
+            }
+        }
+    }
+    Ok(())
 }
 
 fn handle(
@@ -133,6 +246,7 @@ fn handle(
     request.read_exact(&mut body)?;
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
     match (method, route) {
+        ("GET", "/v1/events") if query.is_empty() => Ok(("event-stream", Value::Null)),
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
             Err(_) => (
@@ -158,6 +272,40 @@ fn handle(
             })
         }
         ("GET", "/v1/presets") => Ok(read_result(crate::presets::load())),
+        ("PUT", "/v1/presets") => {
+            let preset = serde_json::from_slice::<crate::presets::Preset>(&body)
+                .ok()
+                .filter(|preset| preset.id < 5 && (600..=3000).contains(&preset.temperature));
+            Ok(match preset {
+                Some(preset) => submit(commands, Command::SavePreset(preset)),
+                None => ("422 Unprocessable Content", json!({"error":"Invalid preset configuration"})),
+            })
+        }
+        ("GET", "/v1/capabilities") => {
+            let boiler = crate::advanced::boiler().ok();
+            let devices = crate::advanced::devices().ok();
+            Ok(("200 OK", json!({
+                "boiler": boiler.map(|boiler| json!({
+                    "open_therm": boiler.open_therm,
+                    "connected": boiler.connected,
+                    "hot_water": boiler.hot_water.map(|water| json!({
+                        "enabled": water.enabled,
+                        "target": water.target,
+                        "min": water.min,
+                        "max": water.max,
+                    })),
+                })),
+                "meters": devices.map(|devices| json!({
+                    "configured_sources": devices.p1_sources,
+                    "adapters": devices.nodes.iter().filter(|node| node.meter).map(|node| json!({
+                        "id": node.id,
+                        "name": node.name,
+                        "connected": node.connected,
+                        "channels": node.channels.iter().map(|channel| channel.name).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                })),
+            })))
+        }
         ("GET", "/v1/diagnostics") => Ok(read_result(thermostat::diagnostics())),
         ("GET", "/v1/energy") => {
             let mut meter = None;
@@ -269,5 +417,54 @@ fn submit(commands: &Sender<Work>, command: Command) -> (&'static str, Value) {
             "504 Gateway Timeout",
             json!({"error":"Command outcome unknown. Check status."}),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn event_stream_requires_auth_and_delivers_current_state() {
+        let token = "test-token";
+        let (commands, _) = mpsc::channel();
+        let mut unauthorized = &b"GET /v1/events HTTP/1.1\r\n\r\n"[..];
+        assert_eq!(
+            handle(&mut unauthorized, token, &commands).unwrap().0,
+            "401 Unauthorized"
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let events = Arc::new(Events::default());
+        let producer = events.clone();
+        let subscribers = Arc::new(Slots::new(1));
+        std::thread::spawn(move || {
+            let _ = serve(&mut server, token, &commands, &producer, &subscribers);
+        });
+        client
+            .write_all(b"GET /v1/events HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n")
+            .unwrap();
+        let mut reader = BufReader::new(client);
+        let mut response = String::new();
+        while !response.contains("event: unavailable\ndata: {}\n\n") {
+            assert_ne!(reader.read_line(&mut response).unwrap(), 0);
+        }
+        assert!(response.contains("Content-Type: text/event-stream"));
+        let status = serde_json::from_value(json!({
+            "currentTemp":"2200", "currentSetpoint":"2000", "programState":"0",
+            "burnerInfo":"0", "connection":"1", "nextSetpoint":"0", "nextTime":"0"
+        }))
+        .unwrap();
+        events.publish(Some(&status));
+        while !response.contains("\"currentTemp\":\"2200\"") {
+            assert_ne!(reader.read_line(&mut response).unwrap(), 0);
+        }
+        assert!(response.contains("event: status\ndata: "));
     }
 }

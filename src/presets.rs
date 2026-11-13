@@ -4,7 +4,8 @@ use std::fmt::Write;
 
 pub const NAMES: [&str; 5] = ["Comfort", "Home", "Sleep", "Away", "Vacation"];
 
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Preset {
     pub id: u8,
     pub temperature: i32,

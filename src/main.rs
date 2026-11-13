@@ -13,7 +13,7 @@ mod telemetry;
 mod thermostat;
 mod ui;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 mod api;
 #[cfg(target_os = "linux")]
 mod device;
@@ -242,7 +242,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let (commands, updates) = thermostat::worker();
-    if let Err(error) = api::start(root, commands.clone()) {
+    let api_events = std::sync::Arc::new(api::Events::default());
+    if let Err(error) = api::start(root, commands.clone(), api_events.clone()) {
         eprintln!("ToonShift API unavailable: {error}");
     }
     let mut settings = plugins::Settings::load(root);
@@ -453,6 +454,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         && settings.installed.contains(&plugin.id)
                 });
             clock = new_clock;
+            if status != update.status {
+                api_events.publish(update.status.as_ref());
+            }
             status = update.status;
             error = update.error;
             if let Some(result) = update.schedule {
