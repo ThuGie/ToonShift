@@ -30,7 +30,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | strvSettings | Smart radiator valves and HVAC | Identify commissioning flow, then verify real valve operation. |
 | systemSettings | Firmware config, watchdog, boot | Stock fallback exercised. Update state, export, and separate preference/factory reset flows remain. |
 | thermostat | `happ_thermstat` | Setpoint changes previously verified. HTTP and BoxTalk temperatures matched. Preset holds until the next period and indefinitely are implemented with mode read-back. Verify live transitions and add custom-end holds. Fault and reboot evidence remain. |
-| thermostatSettings | Program, states, calibration | Revision-checked schedule write and restore verified. Copy-day has host coverage. Preset writes, vacation, and calibration remain. |
+| thermostatSettings | Program, states, calibration | Revision-checked schedule write and restore verified. Copy-day has host coverage. Dated vacations have an authenticated API with read-back. Touchscreen vacation controls, live write verification, and calibration remain. |
 | upsell | Tenant/legacy service | Determine active role and document any local equivalent. |
 | weather | Versioned Weather plugin | Weather 1.2 runs forecast and geocoding mapping in Rust WebAssembly. Both operations passed host fixture checks. The earlier release returned live conditions and five forecast days on-device. Verify Weather 1.2 with live data and add radar. |
 | weatherInt | Tenant weather registration | Verify regional behavior and use the versioned provider where appropriate. |

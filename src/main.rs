@@ -12,6 +12,7 @@ mod schedule;
 mod telemetry;
 mod thermostat;
 mod ui;
+mod vacation;
 
 #[cfg(any(target_os = "linux", test))]
 mod api;

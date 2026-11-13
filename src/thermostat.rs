@@ -178,6 +178,8 @@ pub enum Command {
     SavePreset(crate::presets::Preset),
     ApplyPreset(u8),
     HoldPreset(u8, HoldMode),
+    SaveVacation(Option<crate::vacation::Id>, i32, i32),
+    RemoveVacation(crate::vacation::Id),
 }
 
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -281,6 +283,8 @@ pub fn status() -> Result<Status, String> {
 
 fn apply(command: Command) -> Result<(), String> {
     let query = match command {
+        Command::SaveVacation(id, start, end) => return crate::vacation::save(id, start, end),
+        Command::RemoveVacation(id) => return crate::vacation::remove(id),
         Command::Adjust(delta) => {
             let current = status()?.target().ok_or("Invalid thermostat setpoint")?;
             let target = (current + delta).clamp(600, 3000);

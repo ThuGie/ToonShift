@@ -13,6 +13,19 @@ pub fn thermostat_actions(actions: &[(&str, &str)]) -> io::Result<Vec<String>> {
 }
 
 pub fn invoke(package: &str, service: &str, actions: &[(&str, &str)]) -> io::Result<Vec<String>> {
+    exchange(package, service, actions, true)
+}
+
+pub fn send_thermostat_action(verb: &str, arguments: &str) -> io::Result<()> {
+    exchange("happ_thermstat", "Thermostat", &[(verb, arguments)], false).map(|_| ())
+}
+
+fn exchange(
+    package: &str,
+    service: &str,
+    actions: &[(&str, &str)],
+    wait: bool,
+) -> io::Result<Vec<String>> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")?;
     let host = host.trim();
@@ -32,6 +45,9 @@ pub fn invoke(package: &str, service: &str, actions: &[(&str, &str)]) -> io::Res
     }
     for (index, (verb, arguments)) in actions.iter().enumerate() {
         write!(socket, "<action class=\"invoke\" uuid=\"{uuid}\" destuuid=\"{host}:{package}\" serviceid=\"urn:hcb-hae-com:serviceId:{service}\" requestid=\"{id}-{index}\"><u:{verb} xmlns:u=\"urn:hcb-hae-com:service:{service}:1\">{arguments}</u:{verb}></action>\0")?;
+    }
+    if !wait {
+        return Ok(Vec::new());
     }
     let mut reader = BufReader::new(socket);
     let mut frame = Vec::new();

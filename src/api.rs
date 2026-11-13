@@ -246,6 +246,36 @@ fn handle(
     request.read_exact(&mut body)?;
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
     match (method, route) {
+        ("GET", "/v1/vacations") => Ok(read_result(crate::vacation::load())),
+        ("POST" | "PUT", "/v1/vacations") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Dates { id: Option<String>, start: i32, end: i32 }
+            let dates = serde_json::from_slice::<Dates>(&body).ok().and_then(|dates| {
+                if dates.start <= 0 || dates.end <= dates.start { return None; }
+                let id = match (method, dates.id.as_deref()) {
+                    ("POST", None) => None,
+                    ("PUT", Some(id)) => Some(crate::vacation::Id::parse(id)?),
+                    _ => return None,
+                };
+                Some((id, dates.start, dates.end))
+            });
+            Ok(match dates {
+                Some((id, start, end)) => submit(commands, Command::SaveVacation(id, start, end)),
+                _ => ("422 Unprocessable Content", json!({"error":"Invalid vacation interval"})),
+            })
+        }
+        ("DELETE", "/v1/vacations") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Selection { id: String }
+            let id = serde_json::from_slice::<Selection>(&body).ok()
+                .and_then(|selection| crate::vacation::Id::parse(&selection.id));
+            Ok(match id {
+                Some(id) => submit(commands, Command::RemoveVacation(id)),
+                None => ("422 Unprocessable Content", json!({"error":"Invalid vacation ID"})),
+            })
+        }
         ("GET", "/v1/events") if query.is_empty() => Ok(("event-stream", Value::Null)),
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
