@@ -534,6 +534,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if dirty {
+            api_events.publish_readings(&telemetry);
             let (hour, time) = &clock;
             let hour = *hour;
             let daylight = settings.daylight(hour);

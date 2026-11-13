@@ -21,10 +21,31 @@ const LISTEN: &str = "127.0.0.1:10082";
 #[derive(Default)]
 pub struct Events {
     snapshot: Mutex<(u64, Option<Value>)>,
+    readings: Mutex<crate::telemetry::Readings>,
     changed: Condvar,
 }
 
 impl Events {
+    pub fn publish_readings(&self, readings: &crate::telemetry::Readings) {
+        self.readings.lock().unwrap().clone_from(readings);
+    }
+
+    fn readings(&self) -> Value {
+        use crate::plugins::Metric;
+        let values = self.readings.lock().unwrap();
+        let reading = |metric, unit, scale| {
+            crate::telemetry::current(metric, &values).map(|(value, age)| {
+                json!({"value": value * scale, "unit": unit, "age_seconds": age.as_secs()})
+            })
+        };
+        json!({
+            "room_temperature": reading(Metric::RoomTemperature, "°C", 0.01),
+            "room_humidity": reading(Metric::RoomHumidity, "% RH", 1.0),
+            "electricity": reading(Metric::Electricity, "W", 1.0),
+            "gas": reading(Metric::Gas, "L/h", 1.0),
+        })
+    }
+
     pub fn publish(&self, status: Option<&thermostat::Status>) {
         let payload = status.map(|status| json!(status));
         let mut snapshot = self.snapshot.lock().unwrap();
@@ -141,7 +162,7 @@ fn serve(
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut request = BufReader::new(stream.try_clone()?);
-    let (status, response) = handle(&mut request, token, commands)?;
+    let (status, response) = handle(&mut request, token, commands, events)?;
     if status == "event-stream" {
         if let Some(_slot) = subscribers.take() {
             return stream_events(stream, events);
@@ -199,6 +220,7 @@ fn handle(
     request: &mut impl BufRead,
     token: &str,
     commands: &Sender<Work>,
+    events: &Events,
 ) -> io::Result<(&'static str, Value)> {
     let bad_request = || ("400 Bad Request", json!({"error":"Invalid HTTP request"}));
     let mut headers = String::new();
@@ -283,6 +305,7 @@ fn handle(
             })
         }
         ("GET", "/v1/events") if query.is_empty() => Ok(("event-stream", Value::Null)),
+        ("GET", "/v1/telemetry") if query.is_empty() => Ok(("200 OK", events.readings())),
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
             Err(_) => (
@@ -492,12 +515,38 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
+    fn telemetry_keeps_zero_and_expires_stale_measurements() {
+        use crate::plugins::Metric;
+        let events = Events::default();
+        let now = Instant::now();
+        events.publish_readings(
+            &[
+                (Metric::RoomTemperature, (2140.0, now)),
+                (Metric::Electricity, (0.0, now)),
+                (Metric::RoomHumidity, (48.0, now - Duration::from_secs(901))),
+            ]
+            .into(),
+        );
+        let (commands, _) = mpsc::channel();
+        let mut request =
+            &b"GET /v1/telemetry HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n"[..];
+        let (status, values) = handle(&mut request, "test-token", &commands, &events).unwrap();
+        assert_eq!(status, "200 OK");
+        assert_eq!(values["electricity"]["value"], 0.0);
+        assert!((values["room_temperature"]["value"].as_f64().unwrap() - 21.4).abs() < 1e-9);
+        assert!(values["room_humidity"].is_null());
+        assert!(values["gas"].is_null());
+    }
+
+    #[test]
     fn event_stream_requires_auth_and_delivers_current_state() {
         let token = "test-token";
         let (commands, _) = mpsc::channel();
         let mut unauthorized = &b"GET /v1/events HTTP/1.1\r\n\r\n"[..];
         assert_eq!(
-            handle(&mut unauthorized, token, &commands).unwrap().0,
+            handle(&mut unauthorized, token, &commands, &Events::default())
+                .unwrap()
+                .0,
             "401 Unauthorized"
         );
 

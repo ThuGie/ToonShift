@@ -97,11 +97,7 @@ pub fn age(metric: Metric, values: &Readings) -> Option<Duration> {
 }
 
 pub fn display(metric: Metric, values: &Readings) -> String {
-    let lifetime = if metric == Metric::Gas { 7200 } else { 900 };
-    match values
-        .get(&metric)
-        .filter(|(_, time)| time.elapsed() < Duration::from_secs(lifetime))
-    {
+    match current(metric, values) {
         Some((value, _)) => match metric {
             Metric::RoomHumidity => format!("{value:.0}% RH"),
             Metric::RoomTemperature => format!("{:.1}°C", value / 100.0),
@@ -113,4 +109,11 @@ pub fn display(metric: Metric, values: &Readings) -> String {
         }
         None => "No meter data".into(),
     }
+}
+
+pub fn current(metric: Metric, values: &Readings) -> Option<(f64, Duration)> {
+    let lifetime = if metric == Metric::Gas { 7200 } else { 900 };
+    let (value, received) = values.get(&metric)?;
+    let age = received.elapsed();
+    (age < Duration::from_secs(lifetime)).then_some((*value, age))
 }
