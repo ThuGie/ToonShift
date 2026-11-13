@@ -155,6 +155,22 @@ impl Rate {
 }
 
 impl Chart {
+    pub fn csv(&self) -> String {
+        use std::fmt::Write as _;
+        let mut csv = String::from("from_unix,to_unix,value,unit,window_partial\r\n");
+        let count = self.bars.len() as u64;
+        let window = self.to - self.from;
+        for (index, value) in self.bars.iter().enumerate() {
+            let index = index as u64;
+            let from = self.from + (window * index).div_ceil(count);
+            let to = self.from + (window * (index + 1)).div_ceil(count);
+            let value = value.map_or_else(String::new, |value| value.to_string());
+            writeln!(csv, "{from},{to},{value},{},{}\r", self.unit, self.partial)
+                .expect("writing to a String");
+        }
+        csv
+    }
+
     pub fn estimated_cost(&self, meter: Meter, rates: Rates) -> Option<f64> {
         match meter {
             Meter::Electricity => {
@@ -221,6 +237,23 @@ fn changes(readings: Samples, interval: u64) -> Samples {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csv_preserves_zero_and_missing_buckets_with_chart_boundaries() {
+        let chart = Chart {
+            bars: vec![Some(0.0), None, Some(1.25)],
+            unit: "kWh",
+            total: Some(1.25),
+            partial: true,
+            from: 100,
+            to: 110,
+            tariff_usage: [None; 2],
+        };
+        assert_eq!(
+            chart.csv(),
+            "from_unix,to_unix,value,unit,window_partial\r\n100,104,0,kWh,true\r\n104,107,,kWh,true\r\n107,110,1.25,kWh,true\r\n"
+        );
+    }
 
     #[test]
     fn rates_preserve_precision_and_missing_values() {

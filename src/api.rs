@@ -152,6 +152,12 @@ fn serve(
             json!({"error":"Event stream capacity reached"}),
         );
     }
+    if status == "energy-csv" {
+        let csv = response
+            .as_str()
+            .ok_or_else(|| io::Error::other("Invalid CSV response"))?;
+        return write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/csv; charset=utf-8\r\nContent-Disposition: attachment; filename=toonshift-energy.csv\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{csv}", csv.len());
+    }
     send_json(stream, status, response)
 }
 
@@ -338,7 +344,7 @@ fn handle(
             })))
         }
         ("GET", "/v1/diagnostics") => Ok(read_result(thermostat::diagnostics())),
-        ("GET", "/v1/energy") => {
+        ("GET", "/v1/energy" | "/v1/energy.csv") => {
             let mut meter = None;
             let mut period = None;
             for part in query.split('&') {
@@ -347,16 +353,28 @@ fn handle(
                 };
                 match key {
                     "meter" if meter.is_none() => {
-                        meter = serde_json::from_value::<crate::energy::Meter>(json!(value)).ok()
+                        meter = serde_json::from_value::<crate::energy::Meter>(json!(value)).ok();
+                        if meter.is_none() {
+                            return Ok(bad_request());
+                        }
                     }
                     "period" if period.is_none() => {
-                        period = serde_json::from_value::<crate::energy::Period>(json!(value)).ok()
+                        period = serde_json::from_value::<crate::energy::Period>(json!(value)).ok();
+                        if period.is_none() {
+                            return Ok(bad_request());
+                        }
                     }
                     _ => return Ok(bad_request()),
                 }
             }
             Ok(match (meter, period) {
-                (Some(meter), Some(period)) => read_result(crate::energy::load(meter, period)),
+                (Some(meter), Some(period)) => {
+                    let result = crate::energy::load(meter, period);
+                    match result {
+                        Ok(chart) if route == "/v1/energy.csv" => ("energy-csv", json!(chart.csv())),
+                        result => read_result(result),
+                    }
+                }
                 _ => bad_request(),
             })
         }
