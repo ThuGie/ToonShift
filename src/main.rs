@@ -92,6 +92,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         networks: None,
         network_message: None,
         catalog_message: None,
+        catalog_sources: &[],
         readings: &Default::default(),
         telemetry: &Default::default(),
         energy: None,
@@ -251,6 +252,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_touch = std::time::Instant::now();
     let mut ambient = false;
     let mut catalog = plugins::catalog(root);
+    if settings.migrate_plugin_ids(&catalog) {
+        settings.save(root)?;
+    }
     let mut feeds = feed::Feeds::new(root)
         .map_err(|error| {
             eprintln!("Live plugin feeds unavailable: {error}");
@@ -277,6 +281,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut diagnostics_message = None;
     let (catalog_sender, catalog_receiver) = std::sync::mpsc::channel();
     let mut catalog_busy = false;
+    let mut catalog_sources = plugins::sources(root);
     let mut catalog_message = None;
     let (install_sender, install_receiver) = std::sync::mpsc::channel();
     let mut installing = false;
@@ -396,7 +401,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalog_message = Some(match result {
                 Ok(count) => {
                     catalog = plugins::catalog(root);
+                    catalog_sources = plugins::sources(root);
+                    ui.source_removed();
                     ui.reset_store_page();
+                    let mut migrated = settings.clone();
+                    if migrated.migrate_plugin_ids(&catalog) {
+                        match migrated.save(root) {
+                            Ok(()) => settings = migrated,
+                            Err(error) => {
+                                eprintln!("Could not persist migrated plugin IDs: {error}");
+                                settings = migrated;
+                            }
+                        }
+                    }
                     format!("Catalog updated. {count} widgets available from this source.")
                 }
                 Err(error) => error,
@@ -500,6 +517,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 networks: networks.as_ref(),
                 network_message: network_message.as_deref(),
                 catalog_message: catalog_message.as_deref(),
+                catalog_sources: &catalog_sources,
                 readings: &readings,
                 telemetry: &telemetry,
                 energy: energy_chart.as_ref(),
@@ -870,7 +888,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::Store) => {
                 persist = false;
                 catalog = plugins::catalog(root);
+                catalog_sources = plugins::sources(root);
                 ui.reset_store_page();
+            }
+            Some(Action::RemoveSource(index)) => {
+                if let Some(source) = catalog_sources
+                    .get(index)
+                    .filter(|_| !catalog_busy && !installing)
+                {
+                    catalog_message = Some(match plugins::remove_source(source) {
+                        Ok(()) => {
+                            catalog = plugins::catalog(root);
+                            catalog_sources = plugins::sources(root);
+                            ui.source_removed();
+                            "Catalog source removed".into()
+                        }
+                        Err(error) => format!("Could not remove catalog source: {error}"),
+                    });
+                }
+                persist = false;
             }
             Some(action @ (Action::RefreshOfficial | Action::SyncRepository)) => {
                 let source = if matches!(action, Action::RefreshOfficial) {

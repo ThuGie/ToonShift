@@ -47,9 +47,15 @@ pub struct Plugin {
     pub installed_release: Option<String>,
     #[serde(skip)]
     pub previous_release: Option<String>,
+    #[serde(skip)]
+    pub publisher: Option<String>,
 }
 
 impl Plugin {
+    fn package_id(&self) -> &str {
+        self.id.rsplit('/').next().unwrap_or(&self.id)
+    }
+
     pub fn title(&self, language: crate::language::Language) -> &str {
         if language == crate::language::Language::Dutch {
             return self
@@ -188,6 +194,76 @@ struct Repository {
 
 pub const OFFICIAL: &str = "ThuGie/ToonShift-plugins";
 
+pub struct CatalogSource {
+    path: std::path::PathBuf,
+    pub repository: String,
+    pub revision: String,
+}
+
+fn origin_parts(origin: &str) -> Option<(&str, &str, &str)> {
+    let origin = origin
+        .strip_prefix("https://raw.githubusercontent.com/")?
+        .strip_suffix('/')?;
+    let mut parts = origin.split('/');
+    let (owner, name, revision) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some()
+        || owner.is_empty()
+        || name.is_empty()
+        || revision.is_empty()
+        || ![owner, name, revision].iter().all(|part| {
+            part.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+        })
+    {
+        return None;
+    }
+    Some((owner, name, revision))
+}
+
+pub fn sources(root: &Path) -> Vec<CatalogSource> {
+    let mut sources: Vec<_> = fs::read_dir(root.join("catalog"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()?.to_str()? != "json"
+                || !fs::symlink_metadata(&path)
+                    .is_ok_and(|info| info.is_file() && info.len() <= 32768)
+            {
+                return None;
+            }
+            let repo: Repository = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+            let (owner, name, revision) = origin_parts(repo.origin.as_deref()?)?;
+            if repo.version != 1
+                || path.file_name()?.to_str()?
+                    != format!(
+                        "{}--{}.json",
+                        owner.to_ascii_lowercase(),
+                        name.to_ascii_lowercase()
+                    )
+            {
+                return None;
+            }
+            Some(CatalogSource {
+                path,
+                repository: format!("{owner}/{name}"),
+                revision: revision.into(),
+            })
+        })
+        .collect();
+    sources.sort_by(|a, b| {
+        a.repository
+            .to_ascii_lowercase()
+            .cmp(&b.repository.to_ascii_lowercase())
+    });
+    sources
+}
+
+pub fn remove_source(source: &CatalogSource) -> io::Result<()> {
+    fs::remove_file(&source.path)
+}
+
 pub fn sync(root: &Path, input: &str) -> Result<usize, String> {
     let input = input.trim();
     let (repository, revision) = input.split_once('@').unwrap_or((input, "main"));
@@ -266,8 +342,9 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
         .origin
         .as_ref()
         .ok_or("Refresh the catalog before installing this plugin")?;
+    let id = plugin.package_id();
     let path = artifact
-        .package_file(root, &plugin.id)
+        .package_file(root, id)
         .ok_or("Invalid plugin package origin")?;
     if !artifact.valid() {
         return Err("Invalid plugin package origin".into());
@@ -283,7 +360,7 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
         serde_json::from_slice(&response).map_err(|_| "Invalid plugin package")?;
     if !valid_plugin(&package)
         || package.artifact.is_some()
-        || package.id != plugin.id
+        || package.id != id
         || package.release != plugin.release
     {
         return Err("Plugin package does not match the catalog entry".into());
@@ -301,7 +378,7 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
     file.write_all(&response)
         .and_then(|_| file.sync_all())
         .map_err(|err| err.to_string())?;
-    if let Some((bytes, current)) = read_package(&path, &plugin.id) {
+    if let Some((bytes, current)) = read_package(&path, id) {
         if current.release != package.release {
             let previous = path.with_extension("previous");
             let staged = path.with_extension("previous.tmp");
@@ -316,13 +393,14 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
 }
 
 pub fn rollback(root: &Path, plugin: &Plugin) -> Result<(), String> {
+    let id = plugin.package_id();
     let path = plugin
         .artifact
         .as_ref()
-        .and_then(|artifact| artifact.package_file(root, &plugin.id))
+        .and_then(|artifact| artifact.package_file(root, id))
         .ok_or("Invalid plugin package origin")?;
     let previous = path.with_extension("previous");
-    let (_, candidate) = read_package(&previous, &plugin.id).ok_or("No previous plugin version")?;
+    let (_, candidate) = read_package(&previous, id).ok_or("No previous plugin version")?;
     if let Some(code) = candidate.wasm {
         crate::plugin_runtime::validate(
             &crate::plugin_runtime::decode(&code)?,
@@ -403,6 +481,11 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                         .plugins
                         .into_iter()
                         .map(|mut plugin| {
+                            plugin.publisher = repository
+                                .origin
+                                .as_deref()
+                                .and_then(origin_parts)
+                                .map(|(owner, name, _)| format!("{owner}/{name}"));
                             if let Some(artifact) = &mut plugin.artifact {
                                 artifact.origin = repository.origin.clone();
                             }
@@ -420,16 +503,25 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
             continue;
         };
         for mut plugin in candidates {
-            let valid = valid_plugin(&plugin) && seen.insert(plugin.id.clone());
+            let valid = valid_plugin(&plugin);
+            let package_id = plugin.id.clone();
+            if let Some(publisher) = plugin
+                .publisher
+                .as_ref()
+                .filter(|publisher| !publisher.eq_ignore_ascii_case(OFFICIAL))
+            {
+                plugin.id = format!("{}/{}", publisher.to_ascii_lowercase(), package_id);
+            }
+            let valid = valid && seen.insert(plugin.id.clone());
             if valid {
                 if let Some(package) = plugin
                     .artifact
                     .as_ref()
-                    .and_then(|artifact| artifact.package_file(root, &plugin.id))
+                    .and_then(|artifact| artifact.package_file(root, &package_id))
                 {
-                    if let Some((_, installed)) = read_package(&package, &plugin.id) {
+                    if let Some((_, installed)) = read_package(&package, &package_id) {
                         plugin.previous_release =
-                            read_package(&package.with_extension("previous"), &plugin.id)
+                            read_package(&package.with_extension("previous"), &package_id)
                                 .map(|(_, previous)| previous.release)
                                 .filter(|release| release != &installed.release);
                         plugin.installed_release = Some(installed.release);
@@ -520,6 +612,42 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn migrate_plugin_ids(&mut self, catalog: &[Plugin]) -> bool {
+        let ids: HashSet<_> = self
+            .installed
+            .iter()
+            .chain(self.locations.keys())
+            .chain(self.custom_locations.keys())
+            .cloned()
+            .collect();
+        let mut changed = false;
+        for id in ids {
+            if id.contains('/') || catalog.iter().any(|plugin| plugin.id == id) {
+                continue;
+            }
+            let mut matches = catalog.iter().filter(|plugin| {
+                plugin.package_id() == id
+                    && (plugin.artifact.is_none() || plugin.installed_release.is_some())
+            });
+            let Some(plugin) = matches.next().filter(|_| matches.next().is_none()) else {
+                continue;
+            };
+            for tile in self.installed.iter_mut().filter(|tile| **tile == id) {
+                tile.clone_from(&plugin.id);
+            }
+            if let Some(location) = self.locations.remove(&id) {
+                self.locations.entry(plugin.id.clone()).or_insert(location);
+            }
+            if let Some(location) = self.custom_locations.remove(&id) {
+                self.custom_locations
+                    .entry(plugin.id.clone())
+                    .or_insert(location);
+            }
+            changed = true;
+        }
+        changed
+    }
+
     pub fn tiles_per_page(&self) -> usize {
         if self.wide_tiles {
             2
@@ -566,5 +694,36 @@ impl Settings {
         #[cfg(unix)]
         File::open(root)?.sync_all()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_keeps_order_and_leaves_ambiguous_ids_alone() {
+        let community = |id: &str| {
+            let mut plugin: Plugin = serde_json::from_str(
+                r#"{"id":"widget","title":"Widget","description":"","source":"note"}"#,
+            )
+            .unwrap();
+            plugin.id = id.into();
+            plugin
+        };
+        let mut settings = Settings {
+            installed: vec!["widget".into(), "clock".into(), "widget".into()],
+            ..Settings::default()
+        };
+        settings.locations.insert("widget".into(), "Utrecht".into());
+        let first = community("alice/tools/widget");
+        let second = community("bob/widgets/widget");
+        assert!(!settings.migrate_plugin_ids(&[first.clone(), second]));
+        assert!(settings.migrate_plugin_ids(&[first]));
+        assert_eq!(
+            settings.installed,
+            ["alice/tools/widget", "clock", "alice/tools/widget"]
+        );
+        assert_eq!(settings.locations["alice/tools/widget"], "Utrecht");
     }
 }

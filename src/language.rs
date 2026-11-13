@@ -17,6 +17,13 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Catalog sources" => "Catalogusbronnen",
+            "Remove catalog source?" => "Catalogusbron verwijderen?",
+            "Catalog source removed" => "Catalogusbron verwijderd",
+            "No GitHub catalogs have been added." => "Er zijn geen GitHub-catalogi toegevoegd.",
+            "Its widgets become unavailable until the source is added again." => {
+                "De widgets zijn pas weer beschikbaar nadat je de bron opnieuw toevoegt."
+            }
             "Idle content" => "Inhoud rustscherm",
             "Show dashboard" => "Dashboard tonen",
             "Dashboard page" => "Dashboardpagina",

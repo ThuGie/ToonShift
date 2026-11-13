@@ -70,6 +70,10 @@ pub enum Action {
     CloseRepository,
     SyncRepository,
     RefreshOfficial,
+    CatalogSources,
+    CatalogSourcePage(usize),
+    ConfirmRemoveSource(usize),
+    RemoveSource(usize),
     Presets,
     EditPreset(crate::presets::Preset),
     AdjustPreset(i32),
@@ -165,6 +169,9 @@ pub struct Ui {
     plugin_settings: bool,
     wifi: Option<WifiForm>,
     repository: Option<TextEntry>,
+    source_list: bool,
+    source_offset: usize,
+    remove_source: Option<usize>,
     location_search: bool,
     preset_editor: Option<crate::presets::Preset>,
     energy: (crate::energy::Meter, crate::energy::Period),
@@ -203,6 +210,9 @@ impl Ui {
             plugin_settings: false,
             wifi: None,
             repository: None,
+            source_list: false,
+            source_offset: 0,
+            remove_source: None,
             location_search: false,
             preset_editor: None,
             energy: (
@@ -419,6 +429,14 @@ impl Ui {
             self.repository = None;
         }
         match action {
+            Action::CatalogSources => {
+                self.source_list = true;
+                self.remove_source = None;
+                self.source_offset = 0;
+                self.repository = None;
+            }
+            Action::CatalogSourcePage(offset) => self.source_offset = offset,
+            Action::ConfirmRemoveSource(index) => self.remove_source = Some(index),
             Action::NameDashboard(_) => return Some(action),
             Action::SaveDashboardName(_) => return Some(action),
             Action::ConfirmResetDashboard => self.resetting_dashboard = true,
@@ -597,6 +615,8 @@ impl Ui {
             Action::SchedulePage(page) => self.schedule_page = page,
             Action::Store => {
                 self.page = Page::Store;
+                self.source_list = false;
+                self.remove_source = None;
                 self.stock_confirm = false;
                 return Some(action);
             }
@@ -2158,12 +2178,31 @@ impl Ui {
             self.repository = Some(entry);
             return;
         }
+        if self.source_list {
+            self.store_sources(view, p);
+            return;
+        }
         self.text(32, 130, "Dashboard widgets", 32, p.text, 992);
         for (row, plugin) in view.plugins.iter().skip(self.offset).take(4).enumerate() {
             let y = 150 + row * 88;
             self.panel(Rect(32, y, 960, 80), p.card, 16);
             self.raw_text(54, y + 33, plugin.title(self.language), 23, p.text, 595);
-            self.text(54, y + 61, &plugin.description, 18, p.muted, 738);
+            if let Some(publisher) = &plugin.publisher {
+                let release = plugin
+                    .installed_release
+                    .as_deref()
+                    .unwrap_or(&plugin.release);
+                self.raw_text(
+                    54,
+                    y + 61,
+                    &format!("{publisher} · {release}"),
+                    17,
+                    p.muted,
+                    590,
+                );
+            } else {
+                self.text(54, y + 61, &plugin.description, 18, p.muted, 590);
+            }
             let index = self.offset + row;
             let installed = view.settings.installed.contains(&plugin.id);
             if installed
@@ -2208,6 +2247,103 @@ impl Ui {
         }
         self.button(
             Rect(224, 509, 256, 49),
+            "Catalog sources",
+            p,
+            false,
+            Action::CatalogSources,
+        );
+        self.button(
+            Rect(496, 509, 256, 49),
+            "Add GitHub source",
+            p,
+            false,
+            Action::RepositoryEntry,
+        );
+        if let Some(message) = view.catalog_message.filter(|_| view.error.is_none()) {
+            self.text(32, 581, message, 19, p.muted, 992);
+        }
+    }
+
+    fn store_sources(&mut self, view: &View<'_>, p: &Palette) {
+        self.text(32, 130, "Catalog sources", 30, p.text, 790);
+        self.button(Rect(827, 95, 165, 45), "Store", p, false, Action::Store);
+        if let Some(index) = self.remove_source {
+            if let Some(source) = view.catalog_sources.get(index) {
+                self.panel(Rect(32, 151, 960, 340), p.card, 26);
+                self.text(56, 212, "Remove catalog source?", 29, p.text, 967);
+                self.raw_text(56, 262, &source.repository, 22, p.muted, 967);
+                self.text(
+                    56,
+                    309,
+                    "Its widgets become unavailable until the source is added again.",
+                    20,
+                    p.muted,
+                    967,
+                );
+                self.button(
+                    Rect(56, 409, 190, 55),
+                    "Cancel",
+                    p,
+                    false,
+                    Action::CatalogSources,
+                );
+                self.button(
+                    Rect(778, 409, 190, 55),
+                    "Remove",
+                    p,
+                    true,
+                    Action::RemoveSource(index),
+                );
+                return;
+            }
+        }
+        let sources = view.catalog_sources;
+        self.source_offset = self
+            .source_offset
+            .min(sources.len().saturating_sub(1) / 4 * 4);
+        if sources.is_empty() {
+            self.text(
+                54,
+                207,
+                "No GitHub catalogs have been added.",
+                22,
+                p.muted,
+                960,
+            );
+        }
+        for (row, source) in sources.iter().skip(self.source_offset).take(4).enumerate() {
+            let y = 150 + row * 85;
+            self.panel(Rect(32, y, 960, 76), p.card, 16);
+            self.raw_text(54, y + 31, &source.repository, 23, p.text, 750);
+            self.raw_text(54, y + 60, &source.revision, 17, p.muted, 750);
+            self.button(
+                Rect(770, y + 10, 202, 55),
+                "Remove",
+                p,
+                false,
+                Action::ConfirmRemoveSource(self.source_offset + row),
+            );
+        }
+        if self.source_offset > 0 {
+            self.button(
+                Rect(32, 509, 145, 49),
+                "Previous",
+                p,
+                false,
+                Action::CatalogSourcePage(self.source_offset - 4),
+            );
+        }
+        if self.source_offset + 4 < sources.len() {
+            self.button(
+                Rect(847, 509, 145, 49),
+                "Next",
+                p,
+                false,
+                Action::CatalogSourcePage(self.source_offset + 4),
+            );
+        }
+        self.button(
+            Rect(224, 509, 256, 49),
             "Refresh official",
             p,
             false,
@@ -2223,6 +2359,10 @@ impl Ui {
         if let Some(message) = view.catalog_message.filter(|_| view.error.is_none()) {
             self.text(32, 581, message, 19, p.muted, 992);
         }
+    }
+
+    pub fn source_removed(&mut self) {
+        self.remove_source = None;
     }
 
     fn settings(&mut self, view: &View<'_>, p: &Palette) {
@@ -2502,6 +2642,7 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub catalog_sources: &'a [crate::plugins::CatalogSource],
     pub diagnostics_message: Option<&'a str>,
     pub hardware: Option<&'a crate::advanced::State>,
     pub settings: &'a Settings,
