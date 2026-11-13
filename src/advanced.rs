@@ -87,7 +87,8 @@ pub fn meter_flows(sources: &MeterSources) -> Result<MeterFlows, String> {
 
 pub struct Devices {
     pub nodes: Vec<Node>,
-    pub p1_sources: usize,
+    pub p1_sources: Option<usize>,
+    pub zwave_available: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -329,22 +330,78 @@ fn zwave_response(body: &str) -> Result<Value, String> {
 }
 
 pub fn devices() -> Result<Devices, String> {
-    let nodes = zwave_nodes()?;
-    let p1_sources = thermostat::firmware_get("hcb_config", "action=getDeviceList.json")
-        .ok()
-        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
-        .and_then(|value| {
-            value["device"].as_object().map(|devices| {
-                devices
-                    .values()
-                    .filter(|entry| {
-                        entry["package"] == "hdrv_p1" && entry["type"] == "connection_device"
-                    })
-                    .count()
-            })
-        })
-        .unwrap_or(0);
-    Ok(Devices { nodes, p1_sources })
+    let nodes = zwave_nodes();
+    let p1_sources = p1_sources().ok().map(|sources| sources.len());
+    if p1_sources.is_none() && nodes.is_err() {
+        return Err("Meter and Z-Wave inventories are unavailable".into());
+    }
+    Ok(Devices {
+        zwave_available: nodes.is_ok(),
+        nodes: nodes.unwrap_or_default(),
+        p1_sources,
+    })
+}
+
+fn p1_sources() -> Result<Vec<String>, String> {
+    let body = thermostat::firmware_get("hcb_config", "action=getDeviceList.json")?;
+    let inventory: Value = serde_json::from_str(&body).map_err(|_| "Invalid meter inventory")?;
+    let devices = inventory["device"]
+        .as_object()
+        .ok_or("Missing device inventory")?;
+    Ok(devices
+        .iter()
+        .filter(|(_, entry)| entry["package"] == "hdrv_p1" && entry["type"] == "connection_device")
+        .map(|(id, entry)| entry["uuid"].as_str().unwrap_or(id).to_owned())
+        .collect())
+}
+
+pub fn probe_meter_configuration() -> Result<(), String> {
+    let sources = p1_sources()?;
+    println!("{} configured meter sources", sources.len());
+    for (index, source) in sources.iter().enumerate() {
+        if source.is_empty()
+            || source.len() > 128
+            || !source
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b":-_.{}".contains(&c))
+        {
+            return Err("Invalid meter source identifier".into());
+        }
+        let device = format!("<deviceUuid>{source}</deviceUuid>");
+        let meter = format!("<devUuid>{source}</devUuid>");
+        for (verb, input) in [
+            ("GetMeasureCapabilities", device.as_str()),
+            ("GetSensorConfiguration", device.as_str()),
+            ("GetAvailableSensorsForConfiguration", device.as_str()),
+            ("GetMeterConfiguration", meter.as_str()),
+        ] {
+            match crate::boxtalk::invoke("hdrv_p1", "default", &[(verb, input)]) {
+                Ok(replies) => {
+                    let reply = &replies[0];
+                    let flags: Vec<_> = [
+                        "analogElec",
+                        "p1Elec",
+                        "laserElec",
+                        "analogGas",
+                        "p1Gas",
+                        "analogWater",
+                        "analogSolar",
+                        "analogHeat",
+                    ]
+                    .into_iter()
+                    .filter(|name| reply.contains(name))
+                    .collect();
+                    println!(
+                        "Source {} {verb} returned a response. Sensor types: {}",
+                        index + 1,
+                        flags.join(", ")
+                    );
+                }
+                Err(error) => println!("Source {} {verb}: {error}", index + 1),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn zwave_nodes() -> Result<Vec<Node>, String> {

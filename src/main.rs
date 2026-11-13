@@ -138,6 +138,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use ui::Action;
 
     let root = Path::new("/mnt/data/toon-rust");
+    if std::env::args().nth(1).as_deref() == Some("--probe-meter-configuration") {
+        return advanced::probe_meter_configuration().map_err(Into::into);
+    }
     if std::env::args().nth(1).as_deref() == Some("--sync-plugin-repo") {
         let repository = std::env::args()
             .nth(2)
@@ -185,7 +188,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "Registered Z-Wave nodes: {}; meter nodes: {}; configured meter sources: {}",
             devices.nodes.len(),
             devices.nodes.iter().filter(|node| node.meter).count(),
-            devices.p1_sources
+            devices
+                .p1_sources
+                .map_or_else(|| "unavailable".into(), |count| count.to_string())
         );
         return Ok(());
     }

@@ -526,13 +526,13 @@ impl Ui {
             return;
         }
         let meters = self.hardware.tab == Tab::Meters;
-        if meters {
+        if let Some(count) = inventory.p1_sources.filter(|_| meters) {
             self.text(
                 56,
                 207,
                 &format!(
                     "{} {}",
-                    inventory.p1_sources,
+                    count,
                     self.language.translate("configured meter sources")
                 ),
                 20,
@@ -548,7 +548,18 @@ impl Ui {
             .collect();
         let page = self.hardware.page.min(nodes.len().saturating_sub(1) / 4);
         if nodes.is_empty() {
-            self.text(56, 260, "No matching devices", 23, p.muted, 960);
+            self.text(
+                56,
+                260,
+                if inventory.zwave_available {
+                    "No matching devices"
+                } else {
+                    "Z-Wave inventory unavailable"
+                },
+                23,
+                p.muted,
+                960,
+            );
         }
         for (row, &(index, node)) in nodes.iter().skip(page * 4).take(4).enumerate() {
             let y = 223 + 54 * row;
@@ -568,13 +579,15 @@ impl Ui {
             self.hardware_button(Rect(784, y, 180, 43), "Details", p, false, A::Device(index));
         }
         if !state.busy {
-            self.hardware_button(
-                Rect(56, 477, 220, 50),
-                "Add Z-Wave device",
-                p,
-                true,
-                A::Pair(PairMode::Include),
-            );
+            if inventory.zwave_available {
+                self.hardware_button(
+                    Rect(56, 477, 220, 50),
+                    "Add Z-Wave device",
+                    p,
+                    true,
+                    A::Pair(PairMode::Include),
+                );
+            }
             if meters {
                 self.button(
                     Rect(294, 477, 310, 50),
@@ -597,7 +610,7 @@ impl Ui {
                         960,
                     );
                 }
-            } else {
+            } else if inventory.zwave_available {
                 self.hardware_button(
                     Rect(294, 477, 238, 50),
                     "Remove Z-Wave device",

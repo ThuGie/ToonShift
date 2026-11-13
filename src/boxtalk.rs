@@ -9,6 +9,10 @@ pub fn thermostat(verbs: &[&str]) -> io::Result<Vec<String>> {
 }
 
 pub fn thermostat_actions(actions: &[(&str, &str)]) -> io::Result<Vec<String>> {
+    invoke("happ_thermstat", "Thermostat", actions)
+}
+
+pub fn invoke(package: &str, service: &str, actions: &[(&str, &str)]) -> io::Result<Vec<String>> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")?;
     let host = host.trim();
@@ -27,7 +31,7 @@ pub fn thermostat_actions(actions: &[(&str, &str)]) -> io::Result<Vec<String>> {
         write!(socket, "<discovery nts=\"ssdp:{state}\" uuid=\"{uuid}\" type=\"urn:schemas-hcb-hae-com:device:toonshift\" version=\"v\" sessionKey=\"{id}\"></discovery>\0")?;
     }
     for (index, (verb, arguments)) in actions.iter().enumerate() {
-        write!(socket, "<action class=\"invoke\" uuid=\"{uuid}\" destuuid=\"{host}:happ_thermstat\" serviceid=\"urn:hcb-hae-com:serviceId:Thermostat\" requestid=\"{id}-{index}\"><u:{verb} xmlns:u=\"urn:hcb-hae-com:service:Thermostat:1\">{arguments}</u:{verb}></action>\0")?;
+        write!(socket, "<action class=\"invoke\" uuid=\"{uuid}\" destuuid=\"{host}:{package}\" serviceid=\"urn:hcb-hae-com:serviceId:{service}\" requestid=\"{id}-{index}\"><u:{verb} xmlns:u=\"urn:hcb-hae-com:service:{service}:1\">{arguments}</u:{verb}></action>\0")?;
     }
     let mut reader = BufReader::new(socket);
     let mut frame = Vec::new();
@@ -48,7 +52,7 @@ pub fn thermostat_actions(actions: &[(&str, &str)]) -> io::Result<Vec<String>> {
             continue;
         };
         if !xml.contains("class=\"response\"")
-            || !xml.contains(&format!("uuid=\"{host}:happ_thermstat\""))
+            || !xml.contains(&format!("uuid=\"{host}:{package}\""))
         {
             continue;
         }

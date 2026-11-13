@@ -297,6 +297,7 @@ fn handle(
                 })),
                 "meters": devices.map(|devices| json!({
                     "configured_sources": devices.p1_sources,
+                    "zwave_available": devices.zwave_available,
                     "adapters": devices.nodes.iter().filter(|node| node.meter).map(|node| json!({
                         "id": node.id,
                         "name": node.name,

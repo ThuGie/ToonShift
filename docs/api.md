@@ -79,6 +79,8 @@ The stock interface subscribes to the BoxTalk `thermostatInfo` dataset for compe
 | `hdrv_zwave` · `getDevices.json` | Verified inventory with connection and sensor fields. On the reference device, known electricity and gas devices reported `NaN` values |
 | `hdrv_zwave` · `getControllerInfo` | Verified controller metadata. Treat network identifiers as private |
 
+The firmware 6.4.5 `hdrv_p1` service registration places the meter actions in its `default` service. Binary analysis identified `GetMeasureCapabilities` and `GetSensorConfiguration` with a `deviceUuid` argument and `GetMeterConfiguration` with `devUuid`. `GetAvailableSensorsForConfiguration` emits a `devices` list. The write handlers `SetSensorConfiguration` and `SetMeterConfiguration` process nested device payloads and return `success` and `reason`. Run `/mnt/data/toon-rust/toon-rust --probe-meter-configuration` over SSH to check the read contract. The probe reports source numbers and known sensor names without printing device IDs. These BoxTalk calls still need a live firmware check before wiring the write controls.
+
 The Z-Wave browser client under `/qmf/www/hdrv_zwave/js/` references reads such as `GetAssociation`, `GetBattery`, `GetConfiguration`, `GetControlStatus`, `GetWakeUpInterval`, and `MeterGet`. It also references writes such as `IncludeDevice`, `ExcludeDevice`, `SetAssociation`, `SetConfigurationInt`, `replaceFailedNode`, and `revertToFactoryDefaults`. The client is the local source for exact parameters. These actions were identified by inspection.
 
 ### Local device interfaces and discovery

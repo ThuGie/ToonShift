@@ -17,6 +17,7 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Z-Wave inventory unavailable" => "Z-Wave-apparatenlijst niet beschikbaar",
             "Catalog sources" => "Catalogusbronnen",
             "Remove catalog source?" => "Catalogusbron verwijderen?",
             "Catalog source removed" => "Catalogusbron verwijderd",
