@@ -706,6 +706,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let tile = next.installed.remove(source);
                 next.installed.insert(destination, tile);
             }
+            Some(Action::DuplicateTile(source)) => {
+                if let Some(tile) = next
+                    .installed
+                    .get(source)
+                    .filter(|_| next.installed.len() < 32)
+                    .cloned()
+                {
+                    next.installed.insert(source + 1, tile);
+                } else {
+                    persist = false;
+                }
+            }
+            Some(Action::ResetDashboard) => {
+                next.installed = plugins::Settings::default().installed;
+                next.dashboard_names = Default::default();
+            }
+            Some(Action::NameDashboard(page)) => {
+                if let Some(name) = settings.dashboard_names.get(page) {
+                    ui.edit_dashboard_name(name);
+                }
+                persist = false;
+            }
+            Some(Action::SaveDashboardName(page)) => {
+                if let Some((slot, name)) =
+                    next.dashboard_names.get_mut(page).zip(ui.dashboard_name())
+                {
+                    *slot = name.trim().chars().take(18).collect();
+                } else {
+                    persist = false;
+                }
+            }
             Some(Action::Stock) => return Ok(()),
             Some(Action::StockMeterSession) => {
                 std::fs::write("/run/toonshift-temporary-stock", b"meter")?;
@@ -844,6 +875,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     error = None;
                     if matches!(action, Some(Action::SaveEnergyRate(_))) {
                         ui.close_energy_rate();
+                    }
+                    if matches!(action, Some(Action::SaveDashboardName(_))) {
+                        ui.close_dashboard_name();
+                    }
+                    if matches!(
+                        action,
+                        Some(Action::DuplicateTile(_) | Action::ResetDashboard)
+                    ) {
+                        ui.dashboard_changed(matches!(action, Some(Action::ResetDashboard)));
                     }
                 }
                 Err(err) => error = Some(format!("Could not save settings: {err}")),

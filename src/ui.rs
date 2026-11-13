@@ -100,6 +100,11 @@ pub enum Action {
     EditTiles,
     Tile(usize),
     MoveTile(usize, usize),
+    NameDashboard(usize),
+    SaveDashboardName(usize),
+    DuplicateTile(usize),
+    ConfirmResetDashboard,
+    ResetDashboard,
     Previous,
     Next,
     Toggle(usize),
@@ -166,6 +171,8 @@ pub struct Ui {
     language: crate::language::Language,
     mark: Vec<u32>,
     dashboard_page: usize,
+    naming_dashboard: bool,
+    resetting_dashboard: bool,
     editing: bool,
     selected_tile: Option<usize>,
     stock_confirm: bool,
@@ -205,6 +212,8 @@ impl Ui {
             language: Default::default(),
             mark: Vec::new(),
             dashboard_page: 0,
+            naming_dashboard: false,
+            resetting_dashboard: false,
             editing: false,
             selected_tile: None,
             stock_confirm: false,
@@ -359,7 +368,10 @@ impl Ui {
         self.panel(rect, background, 14);
         let label = if matches!(
             action,
-            Action::PluginPlace(_, _) | Action::UseLocationResult(_, _) | Action::Key(_)
+            Action::PluginPlace(_, _)
+                | Action::UseLocationResult(_, _)
+                | Action::Key(_)
+                | Action::NameDashboard(_)
         ) {
             label
         } else {
@@ -399,10 +411,21 @@ impl Ui {
             action,
             Action::Home | Action::Schedule | Action::Store | Action::Settings
         ) {
+            self.naming_dashboard = false;
+            self.resetting_dashboard = false;
             self.wifi = None;
             self.repository = None;
         }
         match action {
+            Action::NameDashboard(_) => return Some(action),
+            Action::SaveDashboardName(_) => return Some(action),
+            Action::ConfirmResetDashboard => self.resetting_dashboard = true,
+            Action::ResetDashboard => return Some(action),
+            Action::CloseRepository if self.resetting_dashboard => self.resetting_dashboard = false,
+            Action::CloseRepository if self.naming_dashboard => {
+                self.naming_dashboard = false;
+                self.repository = None;
+            }
             Action::EnergyRates => {
                 self.page = Page::EnergyRates;
                 self.close_energy_rate();
@@ -481,7 +504,13 @@ impl Ui {
                 }
             }
             Action::Key(key) => {
-                if let Some(form) = &mut self.wifi {
+                if self.naming_dashboard {
+                    if let Some(entry) = self.repository.as_mut() {
+                        if entry.text.chars().count() < 18 {
+                            entry.text.push(key);
+                        }
+                    }
+                } else if let Some(form) = &mut self.wifi {
                     let target = if form.password_field {
                         &mut form.join.password
                     } else {
@@ -611,7 +640,7 @@ impl Ui {
         if dx.max(dy) < 28 {
             return self.hit(to.0, to.1);
         }
-        if self.page != Page::Home || from.0 < 584 {
+        if self.page != Page::Home || from.0 < 584 || self.naming_dashboard {
             return None;
         }
         if self.editing {
@@ -626,7 +655,21 @@ impl Ui {
                 })
             };
             let source = slot(from)?;
-            let destination = slot(to)?;
+            let destination = slot(to).or_else(|| {
+                let page = if to.0 >= 995 && to.0 > from.0 {
+                    self.dashboard_page + 1
+                } else if to.0 <= 580 && to.0 < from.0 {
+                    self.dashboard_page.checked_sub(1)?
+                } else {
+                    return None;
+                };
+                let destination = page * 4 + (source % 4);
+                if page * 4 >= tiles {
+                    return None;
+                }
+                self.dashboard_page = page;
+                Some(destination.min(tiles - 1))
+            })?;
             self.selected_tile = None;
             return (source != destination).then_some(Action::MoveTile(source, destination));
         }
@@ -642,6 +685,32 @@ impl Ui {
 
     pub fn reset_store_page(&mut self) {
         self.offset = 0;
+    }
+
+    pub fn edit_dashboard_name(&mut self, name: &str) {
+        self.naming_dashboard = true;
+        self.repository = Some(TextEntry {
+            text: name.into(),
+            ..TextEntry::default()
+        });
+    }
+
+    pub fn dashboard_name(&self) -> Option<&str> {
+        self.repository.as_ref().map(|entry| entry.text.as_str())
+    }
+
+    pub fn close_dashboard_name(&mut self) {
+        self.naming_dashboard = false;
+        self.repository = None;
+    }
+
+    pub fn dashboard_changed(&mut self, reset: bool) {
+        self.selected_tile = None;
+        if reset {
+            self.resetting_dashboard = false;
+            self.editing = false;
+            self.dashboard_page = 0;
+        }
     }
 
     pub fn wifi_form(&mut self, network: Option<&NetworkRow>) {
@@ -1429,6 +1498,37 @@ impl Ui {
     }
 
     fn home(&mut self, view: &View<'_>, p: &Palette) {
+        if self.naming_dashboard {
+            self.dashboard_name_editor(p);
+            return;
+        }
+        if self.resetting_dashboard {
+            self.panel(Rect(32, 100, 960, 448), p.card, 26);
+            self.text(56, 165, "Reset dashboard layout?", 30, p.text, 960);
+            self.text(
+                56,
+                215,
+                "Restore the default tiles and clear page names.",
+                23,
+                p.muted,
+                960,
+            );
+            self.button(
+                Rect(56, 462, 215, 51),
+                "Cancel",
+                p,
+                false,
+                Action::CloseRepository,
+            );
+            self.button(
+                Rect(754, 462, 215, 51),
+                "Reset layout",
+                p,
+                true,
+                Action::ResetDashboard,
+            );
+            return;
+        }
         self.panel(Rect(32, 100, 532, 448), p.card, 26);
         self.text(62, 154, "Room temperature", 25, p.muted, 535);
         if let Some(status) = view.status.filter(|status| status.heat_requested()) {
@@ -1596,23 +1696,90 @@ impl Ui {
                     Action::DashboardPage(self.dashboard_page + 1),
                 );
             }
-            self.text(
-                790,
-                534,
-                &format!("{} / {}", self.dashboard_page + 1, pages),
-                21,
-                p.muted,
-                925,
-            );
-            if self.editing && view.error.is_none() {
-                let prompt = if self.selected_tile.is_some() {
-                    "Choose a destination. You can change pages."
-                } else {
-                    "Choose the tile you want to move."
-                };
-                self.text(584, 581, prompt, 16, p.muted, 992);
+            let default_name = format!("{} / {}", self.dashboard_page + 1, pages);
+            let name = view
+                .settings
+                .dashboard_names
+                .get(self.dashboard_page)
+                .filter(|name| !name.is_empty())
+                .map_or(default_name.as_str(), String::as_str);
+            if self.editing {
+                self.button(
+                    Rect(764, 505, 164, 43),
+                    name,
+                    p,
+                    false,
+                    Action::NameDashboard(self.dashboard_page),
+                );
+            } else {
+                self.raw_text(770, 534, name, 18, p.muted, 925);
+            }
+            if self.editing {
+                if let Some(tile) = self.selected_tile {
+                    if view.error.is_none() {
+                        self.text(
+                            32,
+                            581,
+                            "Choose a destination. You can change pages.",
+                            16,
+                            p.muted,
+                            565,
+                        );
+                    }
+                    if installed.len() < 32 {
+                        self.button(
+                            Rect(584, 553, 190, 40),
+                            "Duplicate tile",
+                            p,
+                            false,
+                            Action::DuplicateTile(tile),
+                        );
+                    }
+                } else if view.error.is_none() {
+                    self.text(
+                        32,
+                        581,
+                        "Drag a tile to an edge or tap to move.",
+                        16,
+                        p.muted,
+                        565,
+                    );
+                }
+                self.button(
+                    Rect(802, 553, 190, 40),
+                    "Reset layout",
+                    p,
+                    false,
+                    Action::ConfirmResetDashboard,
+                );
             }
         }
+    }
+
+    fn dashboard_name_editor(&mut self, p: &Palette) {
+        let Some(entry) = self.repository.take() else {
+            return;
+        };
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 148, "Dashboard page name", 30, p.text, 960);
+        self.text(540, 148, "Up to 18 characters", 18, p.muted, 950);
+        self.raw_text(56, 199, &entry.text, 25, p.text, 960);
+        self.keyboard(entry.symbols, entry.shift, p);
+        self.button(
+            Rect(56, 473, 212, 52),
+            "Cancel",
+            p,
+            false,
+            Action::CloseRepository,
+        );
+        self.button(
+            Rect(752, 473, 215, 52),
+            "Save",
+            p,
+            true,
+            Action::SaveDashboardName(self.dashboard_page),
+        );
+        self.repository = Some(entry);
     }
 
     fn energy(&mut self, view: &View<'_>, p: &Palette) {
@@ -2236,6 +2403,31 @@ impl Ui {
                 Action::IdleMinutes(minutes),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dashboard_tests {
+    use super::*;
+
+    #[test]
+    fn drag_crosses_into_a_partial_page_and_back() {
+        let mut ui = Ui::new();
+        ui.editing = true;
+        ui.buttons.push((Rect(794, 303, 198, 192), Action::Tile(3)));
+        assert!(matches!(
+            ui.gesture((870, 390), (1015, 390), 5),
+            Some(Action::MoveTile(3, 4))
+        ));
+        assert_eq!(ui.dashboard_page, 1);
+        ui.buttons.clear();
+        ui.buttons.push((Rect(584, 100, 198, 192), Action::Tile(4)));
+        assert!(ui.gesture((645, 150), (1015, 150), 5).is_none());
+        assert!(matches!(
+            ui.gesture((645, 150), (570, 150), 5),
+            Some(Action::MoveTile(4, 0))
+        ));
+        assert_eq!(ui.dashboard_page, 0);
     }
 }
 

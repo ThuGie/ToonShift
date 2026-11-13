@@ -17,6 +17,17 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Dashboard page name" => "Naam van dashboardpagina",
+            "Duplicate tile" => "Tegel dupliceren",
+            "Reset layout" => "Indeling herstellen",
+            "Reset dashboard layout?" => "Dashboardindeling herstellen?",
+            "Restore the default tiles and clear page names." => {
+                "Herstel de standaardtegels en wis paginanamen."
+            }
+            "Drag a tile to an edge or tap to move." => {
+                "Sleep een tegel naar de rand of tik om te verplaatsen."
+            }
+            "Up to 18 characters" => "Maximaal 18 tekens",
             "Roll back" => "Terugzetten",
             "Restoring previous version…" => "Vorige versie terugzetten…",
             "Export diagnostics" => "Diagnostiek exporteren",
