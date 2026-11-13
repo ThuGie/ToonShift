@@ -45,17 +45,13 @@ pub fn diagnostics() -> Result<Diagnostics, String> {
     use crate::boxtalk::field;
     let replies = crate::boxtalk::thermostat(&["GetTempOffset", "GetBoilerType", "GetDhwSettings"])
         .map_err(|error| error.to_string())?;
-    let version = firmware_get("hcb_config", "action=getVersionInfo.json")
-        .ok()
-        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-        .and_then(|value| value["firmwareVersion"].as_str().map(str::to_owned));
     let flag = |value| match value {
         Some("0") => Some(false),
         Some("1") => Some(true),
         _ => None,
     };
     Ok(Diagnostics {
-        firmware_version: version,
+        firmware_version: firmware_version().ok(),
         calibration_offset_celsius: field(&replies[0], "offset")
             .and_then(|v| v.parse().ok())
             .filter(|v: &f64| v.is_finite()),
@@ -64,6 +60,23 @@ pub fn diagnostics() -> Result<Diagnostics, String> {
         hot_water_enabled: flag(field(&replies[2], "dhwEnabled")),
         hot_water_target_celsius: field(&replies[2], "dhwSetpoint").and_then(|v| v.parse().ok()),
     })
+}
+
+pub fn firmware_version() -> Result<String, String> {
+    let response = firmware_get("hcb_config", "action=getVersionInfo.json")?;
+    let value: serde_json::Value =
+        serde_json::from_str(&response).map_err(|_| "Invalid firmware version response")?;
+    value["firmwareVersion"]
+        .as_str()
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 40
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-+_".contains(&b))
+        })
+        .map(str::to_owned)
+        .ok_or_else(|| "Firmware version unavailable".into())
 }
 
 #[cfg(target_os = "linux")]
@@ -75,7 +88,8 @@ pub fn export_diagnostics(root: &std::path::Path) -> std::io::Result<()> {
     let status = status().ok();
     let report = serde_json::json!({
         "toonshift_version": env!("CARGO_PKG_VERSION"),
-        "firmware_version": diagnostics.as_ref().and_then(|d| d.firmware_version.as_deref())
+        "firmware_version": diagnostics.as_ref().and_then(|d| d.firmware_version.clone())
+            .or_else(|| firmware_version().ok())
             .filter(|value| value.len() <= 32 && value.bytes().all(|c| c.is_ascii_digit() || c == b'.')),
         "open_therm_configured": diagnostics.as_ref().and_then(|d| d.open_therm_configured),
         "hot_water_enabled": diagnostics.as_ref().and_then(|d| d.hot_water_enabled),

@@ -103,6 +103,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         telemetry: &Default::default(),
         energy: None,
         diagnostics_message: None,
+        firmware_version: None,
         history: None,
         ambient: false,
         location_results: None,
@@ -303,6 +304,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (diagnostics_sender, diagnostics_receiver) = std::sync::mpsc::channel();
     let mut exporting_diagnostics = false;
     let mut diagnostics_message = None;
+    let (version_sender, version_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = version_sender.send(thermostat::firmware_version());
+    });
+    let mut firmware_version = None;
     let (catalog_sender, catalog_receiver) = std::sync::mpsc::channel();
     let mut catalog_busy = false;
     let mut catalog_sources = plugins::sources(root);
@@ -486,6 +492,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             });
             dirty = true;
         }
+        if let Ok(result) = version_receiver.try_recv() {
+            firmware_version = Some(result);
+            dirty = true;
+        }
         for update in updates.try_iter() {
             let new_clock = device::time();
             dirty |= status != update.status
@@ -562,6 +572,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 telemetry: &telemetry,
                 energy: energy_chart.as_ref(),
                 diagnostics_message,
+                firmware_version: firmware_version.as_ref(),
                 history: heating_history.as_ref(),
                 ambient,
                 location_results: location_results.as_ref(),

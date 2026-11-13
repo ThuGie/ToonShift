@@ -2944,6 +2944,25 @@ impl Ui {
             p.muted,
             966,
         );
+        let version = view
+            .firmware_version
+            .map_or("…", |version| version.as_deref().unwrap_or("—"));
+        self.raw_text(
+            638,
+            263,
+            &format!("ToonShift {}", env!("CARGO_PKG_VERSION")),
+            19,
+            p.muted,
+            963,
+        );
+        self.raw_text(
+            638,
+            292,
+            &format!("{} {version}", self.language.translate("Firmware")),
+            19,
+            p.muted,
+            963,
+        );
         self.text(58, 327, "Color theme", 28, p.text, 966);
         for (index, (label, theme)) in [
             ("Blue", Theme::Midnight),
@@ -3180,6 +3199,7 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub firmware_version: Option<&'a Result<String, String>>,
     pub vacations: Option<&'a Result<Vec<crate::vacation::Vacation>, String>>,
     pub vacation_busy: bool,
     pub catalog_sources: &'a [crate::plugins::CatalogSource],

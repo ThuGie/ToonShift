@@ -344,6 +344,10 @@ fn handle(
             })))
         }
         ("GET", "/v1/diagnostics") => Ok(read_result(thermostat::diagnostics())),
+        ("GET", "/v1/version") => Ok(("200 OK", json!({
+            "toonshift": env!("CARGO_PKG_VERSION"),
+            "firmware": thermostat::firmware_version().ok(),
+        }))),
         ("GET", "/v1/energy" | "/v1/energy.csv") => {
             let mut meter = None;
             let mut period = None;

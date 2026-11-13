@@ -28,6 +28,7 @@ curl -H "Authorization: Bearer $TOONSHIFT_TOKEN" http://127.0.0.1:18082/v1/statu
 | `PUT /v1/presets` | `{"id":1,"temperature":1950,"hot_water":true}` | Saves a preset through the touchscreen thermostat worker |
 | `GET /v1/capabilities` | — | Boiler protocol and link state, hot-water capabilities when present, and configured meter adapters and channels. Unavailable subsystems are null |
 | `GET /v1/diagnostics` | — | Firmware version and BoxTalk temperature offset, measured temperature, and boiler/DHW configuration |
+| `GET /v1/version` | — | ToonShift version and installed firmware version, with firmware reported as null when unavailable |
 | `PUT /v1/preset` | `{"id":1}` | Selects Comfort (0), Home (1), Sleep (2), Away (3), or Vacation (4) |
 | `PUT /v1/hold` | `{"preset":1,"mode":"until_next_period"}` | Applies a preset from 0 to 3 until the next scheduled period. Use `"indefinite"` to hold until manually changed. Resume through `PUT /v1/schedule` |
 | `GET /v1/energy?meter=electricity&period=day` | — | Time bounds, chart buckets, unit, recorded total, and a flag for incomplete readings |
