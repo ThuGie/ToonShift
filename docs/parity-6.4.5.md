@@ -22,7 +22,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | imageViewer | Local image storage and decode | Map stock formats and browsing flow. Add a bounded local viewer if active. |
 | inbox | `happ_usermsg` | Map notification dataset and implement list, read state, and dismissal. |
 | installWizard | Stock wizard and config objects | Map steps and dependencies before implementing first-run and commissioning. |
-| internetSettings | `hcb_netcon`, wpa_supplicant, DHCP | Scan, credential form, DHCP and static IPv4 setup with rollback, saved-network reconnect, and current SSID, IPv4 and signal diagnostics implemented. Verify both address modes, reconnect and rollback with a test SSID. Forget and Ethernet remain. |
+| internetSettings | `hcb_netcon`, wpa_supplicant, DHCP | Scan, credential form, DHCP and static IPv4 setup with rollback, saved-network reconnect, Wi-Fi diagnostics, and Ethernet link and IPv4 diagnostics implemented. Verify both address modes, reconnect and rollback with a test SSID. Saved-network removal and Ethernet configuration remain. |
 | settings | Firmware and ToonShift preferences | English/Dutch selection persisted on device. Themes, brightness, and idle settings need full device coverage. |
 | smokeDetector | Configured sensor | Verify status, test events, alerts, and faults on real hardware. |
 | solar | Configured logger or external collector | Chart and widget implemented. No solar logger on reference unit. Verify with a configured installation. |

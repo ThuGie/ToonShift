@@ -65,6 +65,62 @@ pub struct Connection {
     pub rssi: Option<i16>,
 }
 
+pub struct Ethernet {
+    pub carrier: Option<bool>,
+    pub address: Option<Ipv4Addr>,
+}
+
+#[cfg(target_os = "linux")]
+pub fn ethernet() -> Option<Ethernet> {
+    let interface = std::fs::read_dir("/sys/class/net")
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            (name.starts_with("eth") || name.starts_with("en"))
+                && !entry.path().join("wireless").exists()
+        })?;
+    let name = interface.file_name();
+    let interface = interface.path();
+    let carrier = std::fs::read_to_string(interface.join("carrier"))
+        .ok()
+        .and_then(|value| match value.trim() {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        });
+    let mut address = None;
+    let mut list = std::ptr::null_mut();
+    // getifaddrs owns the linked list until freeifaddrs. An AF_INET entry
+    // carries a sockaddr_in, and its bytes are already in network order.
+    unsafe {
+        if libc::getifaddrs(&mut list) == 0 {
+            let mut current = list;
+            while let Some(entry) = current.as_ref() {
+                if !entry.ifa_name.is_null()
+                    && std::ffi::CStr::from_ptr(entry.ifa_name).to_bytes()
+                        == name.as_encoded_bytes()
+                    && entry
+                        .ifa_addr
+                        .as_ref()
+                        .is_some_and(|addr| i32::from(addr.sa_family) == libc::AF_INET)
+                {
+                    let addr = &*entry.ifa_addr.cast::<libc::sockaddr_in>();
+                    let ip = Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes());
+                    if !ip.is_unspecified() {
+                        address = Some(ip);
+                        break;
+                    }
+                }
+                current = entry.ifa_next;
+            }
+            libc::freeifaddrs(list);
+        }
+    }
+    Some(Ethernet { carrier, address })
+}
+
 fn parse_connection(status: &str, signal: &str) -> Option<Connection> {
     let field = |name| {
         status

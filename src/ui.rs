@@ -1181,8 +1181,33 @@ impl Ui {
             false,
             Action::ReconnectWifi,
         );
-        if let Some(message) = view.network_message {
-            self.text(56, 515, message, 20, p.muted, 963);
+        if let Some(wired) = view.ethernet {
+            let state = match wired.carrier {
+                Some(true) => "Ethernet connected",
+                Some(false) => "Ethernet disconnected",
+                None => "Ethernet link unknown",
+            };
+            let detail = wired.address.map_or_else(
+                || {
+                    if wired.carrier == Some(true) {
+                        format!(" · {}", self.language.translate("Waiting for IP address"))
+                    } else {
+                        String::new()
+                    }
+                },
+                |ip| format!(" · {ip}"),
+            );
+            self.raw_text(
+                56,
+                514,
+                &format!("{}{detail}", self.language.translate(state)),
+                20,
+                p.muted,
+                963,
+            );
+        }
+        if let Some(message) = view.network_message.filter(|_| view.error.is_none()) {
+            self.text(32, 581, message, 19, p.muted, 992);
         }
     }
 
@@ -3172,6 +3197,7 @@ pub struct View<'a> {
     pub presets: Option<&'a Result<Vec<crate::presets::Preset>, String>>,
     pub networks: Option<&'a Result<Vec<NetworkRow>, String>>,
     pub wifi_connection: Option<&'a std::io::Result<Option<crate::network::Connection>>>,
+    pub ethernet: Option<&'a crate::network::Ethernet>,
     pub network_message: Option<&'a str>,
     pub catalog_message: Option<&'a str>,
     pub readings: &'a HashMap<String, crate::feed::Reading>,
