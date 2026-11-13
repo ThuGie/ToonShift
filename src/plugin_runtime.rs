@@ -1,7 +1,7 @@
 use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 pub fn decode(code: &str) -> Result<Vec<u8>, String> {
-    if code.len() > 24000
+    if code.len() > 192000
         || !code.len().is_multiple_of(2)
         || !code.bytes().all(|b| b.is_ascii_hexdigit())
     {
@@ -14,13 +14,21 @@ pub fn decode(code: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn render(code: &[u8], input: &[u8]) -> Result<String, String> {
+    run(code, input, false)
+}
+
+pub fn render_feed(code: &[u8], input: &[u8]) -> Result<String, String> {
+    run(code, input, true)
+}
+
+fn run(code: &[u8], input: &[u8], structured: bool) -> Result<String, String> {
     let mut config = Config::default();
     config.consume_fuel(true);
     config.enforced_limits(wasmi::EnforcedLimits::strict());
     let engine = Engine::new(&config);
     let module = Module::new(&engine, code).map_err(|e| e.to_string())?;
     let limits = StoreLimitsBuilder::new()
-        .memory_size(128 * 1024)
+        .memory_size(if structured { 512 * 1024 } else { 128 * 1024 })
         .table_elements(128)
         .instances(1)
         .memories(1)
@@ -28,7 +36,9 @@ pub fn render(code: &[u8], input: &[u8]) -> Result<String, String> {
         .build();
     let mut store = Store::new(&engine, limits);
     store.limiter(|limits| limits);
-    store.set_fuel(100_000).map_err(|e| e.to_string())?;
+    store
+        .set_fuel(if structured { 4_000_000 } else { 100_000 })
+        .map_err(|e| e.to_string())?;
     let instance = Linker::<StoreLimits>::new(&engine)
         .instantiate(&mut store, &module)
         .and_then(|pre| pre.ensure_no_start(&mut store).map_err(Into::into))
@@ -36,11 +46,19 @@ pub fn render(code: &[u8], input: &[u8]) -> Result<String, String> {
     let memory = instance
         .get_memory(&store, "memory")
         .ok_or("Plugin must export memory")?;
-    if input.len() > 32768 {
+    if input.len() > if structured { 32770 } else { 32768 } {
         return Err("Plugin input exceeds 32 KiB".into());
     }
+    let offset = if structured {
+        instance
+            .get_typed_func::<(), i32>(&store, "input_buffer")
+            .and_then(|func| func.call(&mut store, ()))
+            .map_err(|e| e.to_string())? as u32 as usize
+    } else {
+        0
+    };
     memory
-        .write(&mut store, 0, input)
+        .write(&mut store, offset, input)
         .map_err(|e| e.to_string())?;
     let render = instance
         .get_typed_func::<i32, i64>(&store, "render")
@@ -49,7 +67,7 @@ pub fn render(code: &[u8], input: &[u8]) -> Result<String, String> {
         .call(&mut store, input.len() as i32)
         .map_err(|e| e.to_string())? as u64;
     let len = (output & 0xffff_ffff) as usize;
-    if !(1..=256).contains(&len) {
+    if !(1..=if structured { 4096 } else { 256 }).contains(&len) {
         return Err("Invalid plugin output length".into());
     }
     let mut text = vec![0; len];

@@ -16,7 +16,13 @@ pub fn trust(root: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn get(ca: &Path, url: &str) -> Result<Vec<u8>, String> {
-    fetch(ca, url, None)
+    fetch(ca, url, None, 32768)
+}
+
+pub const PACKAGE_LIMIT: usize = 196608;
+
+pub fn package(ca: &Path, url: &str) -> Result<Vec<u8>, String> {
+    fetch(ca, url, None, PACKAGE_LIMIT)
 }
 
 fn public_ipv4(ip: Ipv4Addr) -> bool {
@@ -65,7 +71,7 @@ pub fn public_json(ca: &Path, url: &str) -> Result<Vec<u8>, String> {
         .or_else(|| firmware_dns(authority))
         .ok_or("Plugin feeds require a public IPv4 destination")?;
     let resolve = format!("{authority}:443:{endpoint}");
-    fetch(ca, url, Some(&resolve))
+    fetch(ca, url, Some(&resolve), 32768)
 }
 
 fn firmware_dns(host: &str) -> Option<Ipv4Addr> {
@@ -108,7 +114,7 @@ fn firmware_dns(host: &str) -> Option<Ipv4Addr> {
         .find(|ip| public_ipv4(*ip))
 }
 
-fn fetch(ca: &Path, url: &str, resolve: Option<&str>) -> Result<Vec<u8>, String> {
+fn fetch(ca: &Path, url: &str, resolve: Option<&str>, limit: usize) -> Result<Vec<u8>, String> {
     let mut curl = Command::new("/usr/bin/curl");
     curl.args([
         "-q",
@@ -121,7 +127,7 @@ fn fetch(ca: &Path, url: &str, resolve: Option<&str>) -> Result<Vec<u8>, String>
         "--max-time",
         "10",
         "--max-filesize",
-        "32768",
+        &limit.to_string(),
         "--cacert",
     ])
     .arg(ca);
@@ -140,11 +146,14 @@ fn fetch(ca: &Path, url: &str, resolve: Option<&str>) -> Result<Vec<u8>, String>
         .stdout
         .take()
         .unwrap()
-        .take(32769)
+        .take(limit as u64 + 1)
         .read_to_end(&mut response);
+    if read.is_err() || response.len() > limit {
+        let _ = child.kill();
+    }
     let status = child.wait().map_err(|error| error.to_string())?;
     read.map_err(|error| error.to_string())?;
-    if !status.success() || response.len() > 32768 {
+    if !status.success() || response.len() > limit {
         return Err("HTTPS request failed".into());
     }
     Ok(response)

@@ -32,7 +32,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | thermostat | `happ_thermstat` | Setpoint changes previously verified. HTTP and BoxTalk temperatures matched. Timed hold, faults, and reboot evidence remain. |
 | thermostatSettings | Program, states, calibration | Revision-checked schedule write and restore verified. Copy-day has host coverage. Preset writes, vacation, and calibration remain. |
 | upsell | Tenant/legacy service | Determine active role and document any local equivalent. |
-| weather | Versioned Weather plugin | Device returned live conditions and five daily forecasts. Location search, offline behavior, and radar remain to verify. |
+| weather | Versioned Weather plugin | Weather 1.2 runs forecast and geocoding mapping in Rust WebAssembly. Both operations passed host fixture checks. The earlier release returned live conditions and five forecast days on-device. Verify Weather 1.2 with live data and add radar. |
 | weatherInt | Tenant weather registration | Verify regional behavior and use the versioned provider where appropriate. |
 | winwit | Tenant-specific registration | Identify visible role and firmware dependency. |
 

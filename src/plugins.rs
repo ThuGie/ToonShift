@@ -118,7 +118,9 @@ impl Artifact {
 #[derive(Clone, Deserialize)]
 pub struct Feed {
     pub url: String,
+    #[serde(default)]
     pub value: String,
+    #[serde(default)]
     pub suffix: String,
     #[serde(default)]
     pub condition: String,
@@ -137,9 +139,13 @@ pub struct Feed {
 #[derive(Clone, Deserialize)]
 pub struct LocationSearch {
     pub url: String,
+    #[serde(default)]
     pub results: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub latitude: String,
+    #[serde(default)]
     pub longitude: String,
     #[serde(default)]
     pub region: Vec<String>,
@@ -264,7 +270,7 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
     if !artifact.valid() {
         return Err("Invalid plugin package origin".into());
     }
-    let response = crate::download::get(
+    let response = crate::download::package(
         &root.join("https-roots.pem"),
         &format!("{origin}{}", artifact.path),
     )?;
@@ -305,15 +311,15 @@ fn valid_plugin(plugin: &Plugin) -> bool {
             .is_none_or(|title| !title.trim().is_empty() && title.len() <= 96)
         && plugin.description.len() <= 256
         && plugin.text.len() <= 1024
+        && plugin.wasm.as_ref().is_none_or(|code| {
+            matches!(plugin.source, Source::Wasm | Source::HttpsJson)
+                && crate::plugin_runtime::decode(code).is_ok()
+        })
         && plugin.artifact.as_ref().is_none_or(Artifact::valid)
         && (plugin.artifact.is_some()
             || ((!matches!(plugin.source, Source::BoxTalk) || plugin.metric.is_some())
                 && (!matches!(plugin.source, Source::MeterArchive) || plugin.meter.is_some())
-                && (!matches!(plugin.source, Source::Wasm)
-                    || plugin
-                        .wasm
-                        .as_ref()
-                        .is_some_and(|code| crate::plugin_runtime::decode(code).is_ok()))
+                && (!matches!(plugin.source, Source::Wasm) || plugin.wasm.is_some())
                 && (!matches!(plugin.source, Source::HttpsJson)
                     || plugin.feed.as_ref().is_some_and(|feed| {
                         (1..=24).contains(&feed.places.len())
@@ -376,7 +382,7 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                 {
                     if let Some(installed) = fs::read(package)
                         .ok()
-                        .filter(|bytes| bytes.len() <= 32768)
+                        .filter(|bytes| bytes.len() <= crate::download::PACKAGE_LIMIT)
                         .and_then(|bytes| serde_json::from_slice::<Plugin>(&bytes).ok())
                         .filter(|installed| {
                             installed.id == plugin.id

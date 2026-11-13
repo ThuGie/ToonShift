@@ -5,14 +5,14 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
 pub struct Reading {
     pub value: String,
     pub detail: String,
     pub rows: Vec<RangeRow>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
 pub struct RangeRow {
     pub date: String,
     pub range: String,
@@ -23,7 +23,7 @@ type Key = (String, String, String);
 type ResultRow = (Key, Result<Reading, String>);
 
 enum Task {
-    Feed(Box<Feed>, Place, Language),
+    Feed(Box<Feed>, Place, Language, Option<String>),
     Meter(energy::Meter),
     Wasm(String, Vec<u8>),
 }
@@ -71,7 +71,9 @@ impl Feeds {
                             detail: String::new(),
                             rows: Vec::new(),
                         }),
-                    Task::Feed(feed, place, language) => fetch(&ca, &feed, &place, language),
+                    Task::Feed(feed, place, language, code) => {
+                        fetch(&ca, &feed, &place, language, code.as_deref())
+                    }
                     Task::Meter(meter) => {
                         energy::load(meter, energy::Period::Day).map(|chart| Reading {
                             value: chart.total.map_or_else(
@@ -161,6 +163,11 @@ impl Feeds {
                 Ok(reading) => reading,
                 Err(error) => {
                     eprintln!("{}: {error}", result_key.0);
+                    if let Some(reading) = values.get_mut(&result_key.0) {
+                        reading.detail = "Could not refresh data".into();
+                        redraw = true;
+                        continue;
+                    }
                     Reading {
                         value: "Unavailable".into(),
                         detail: "Could not refresh data".into(),
@@ -182,7 +189,12 @@ impl Feeds {
                     match plugin.source {
                         Source::HttpsJson => plugin.feed.as_ref().zip(place(plugin, settings)).map(
                             |(feed, place)| {
-                                Task::Feed(Box::new(feed.clone()), place.clone(), settings.language)
+                                Task::Feed(
+                                    Box::new(feed.clone()),
+                                    place.clone(),
+                                    settings.language,
+                                    plugin.wasm.clone(),
+                                )
                             },
                         ),
                         Source::MeterArchive => plugin.meter.map(Task::Meter),
@@ -206,12 +218,23 @@ impl Feeds {
     }
 }
 
-pub fn fetch(ca: &Path, feed: &Feed, place: &Place, language: Language) -> Result<Reading, String> {
+pub fn fetch(
+    ca: &Path,
+    feed: &Feed,
+    place: &Place,
+    language: Language,
+    code: Option<&str>,
+) -> Result<Reading, String> {
     let url = feed
         .url
         .replace("{latitude}", &place.latitude.to_string())
         .replace("{longitude}", &place.longitude.to_string());
     let response = crate::download::public_json(ca, &url)?;
+    if let Some(code) = code {
+        let mut reading: Reading = parse_executable_response(code, &response, language, false)?;
+        reading.rows.truncate(5);
+        return Ok(reading);
+    }
     let json: serde_json::Value = serde_json::from_slice(&response).map_err(|e| e.to_string())?;
     let number = json
         .pointer(&feed.value)
@@ -282,17 +305,32 @@ pub fn fetch(ca: &Path, feed: &Feed, place: &Place, language: Language) -> Resul
     })
 }
 
+fn parse_executable_response<T: serde::de::DeserializeOwned>(
+    code: &str,
+    response: &[u8],
+    language: Language,
+    search: bool,
+) -> Result<T, String> {
+    let mut input = Vec::with_capacity(response.len() + 2);
+    input.extend([u8::from(search), u8::from(language == Language::Dutch)]);
+    input.extend_from_slice(response);
+    let code = crate::plugin_runtime::decode(code)?;
+    let output = crate::plugin_runtime::render_feed(&code, &input)?;
+    serde_json::from_str(&output).map_err(|_| "Plugin returned an invalid response".into())
+}
+
 pub fn search(
     ca: &Path,
     search: &LocationSearch,
     query: &str,
     language: crate::language::Language,
+    code: Option<&str>,
 ) -> Result<Vec<Place>, String> {
     let query = query.trim();
     if query.len() < 2 || query.len() > 100 {
         return Err("Enter at least two letters.".into());
     }
-    let language = if language == crate::language::Language::Dutch {
+    let locale = if language == crate::language::Language::Dutch {
         "nl"
     } else {
         "en"
@@ -301,8 +339,19 @@ pub fn search(
     let url = search
         .url
         .replace("{query}", &query)
-        .replace("{language}", language);
+        .replace("{language}", locale);
     let body = crate::download::public_json(ca, &url)?;
+    if let Some(code) = code {
+        let mut places: Vec<Place> = parse_executable_response(code, &body, language, true)?;
+        places.retain(|place| {
+            !place.name.is_empty()
+                && place.name.len() <= 80
+                && (-90.0..=90.0).contains(&place.latitude)
+                && (-180.0..=180.0).contains(&place.longitude)
+        });
+        places.truncate(5);
+        return Ok(places);
+    }
     let json: serde_json::Value =
         serde_json::from_slice(&body).map_err(|_| "Invalid location response")?;
     let Some(results) = json
@@ -337,4 +386,31 @@ pub fn search(
         })
         .take(5)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the separate ToonShift-plugins checkout"]
+    fn weather_package_runs_forecast_and_geocoding() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let file = root.join("ToonShift-plugins/plugins/toonshift-weather.json");
+        let plugin: Plugin = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        let code = plugin.wasm.unwrap();
+        let forecast = br#"{"current":{"temperature_2m":-1.7,"weather_code":63},"daily":{"time":["2026-11-13"],"temperature_2m_min":[-2],"temperature_2m_max":[1],"weather_code":[85]}}"#;
+        let reading: Reading =
+            parse_executable_response(&code, forecast, Language::Dutch, false).unwrap();
+        assert_eq!(reading.value, "-2°C");
+        assert_eq!(reading.detail, "Regen");
+        assert_eq!(reading.rows[0].condition, "Sneeuwbuien");
+        let search = br#"{"results":[{"name":"Utrecht","latitude":52.09,"longitude":5.12,"country":"Nederland"}]}"#;
+        let places: Vec<Place> =
+            parse_executable_response(&code, search, Language::Dutch, true).unwrap();
+        assert_eq!(places[0].name, "Utrecht, Nederland");
+        assert!(
+            parse_executable_response::<Reading>(&code, b"{}", Language::English, false).is_err()
+        );
+    }
 }

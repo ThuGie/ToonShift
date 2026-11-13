@@ -210,7 +210,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let settings = plugins::Settings::load(root);
         let config = plugin.feed.as_ref().ok_or("Plugin has no data feed")?;
         let location = feed::place(plugin, &settings).ok_or("Plugin has no location")?;
-        let reading = feed::fetch(&download::trust(root)?, config, location, settings.language)?;
+        let reading = feed::fetch(
+            &download::trust(root)?,
+            config,
+            location,
+            settings.language,
+            plugin.wasm.as_deref(),
+        )?;
         println!("{}: {} {}", location.name, reading.value, reading.detail);
         for day in reading.rows {
             println!("{}  {}  {}", day.date, day.range, day.condition);
@@ -624,10 +630,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(Action::RunLocationSearch(index)) => {
                 if !location_busy {
-                    let search = catalog
-                        .get(index)
-                        .and_then(|plugin| plugin.feed.as_ref()?.search.clone());
-                    if let (Some(query), Some(search)) = (ui.take_repository(), search) {
+                    let search = catalog.get(index).and_then(|plugin| {
+                        Some((plugin.feed.as_ref()?.search.clone()?, plugin.wasm.clone()))
+                    });
+                    if let (Some(query), Some((search, code))) = (ui.take_repository(), search) {
                         let sender = location_sender.clone();
                         let language = settings.language;
                         location_busy = true;
@@ -638,6 +644,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 &search,
                                 &query,
                                 language,
+                                code.as_deref(),
                             );
                             let _ = sender.send(result);
                         });
