@@ -2398,7 +2398,11 @@ impl Ui {
                         (next - x).saturating_sub(4).max(1),
                         y.abs_diff(zero).max(2),
                     ),
-                    p.accent,
+                    if chart.partial_bars[index] {
+                        p.muted
+                    } else {
+                        p.accent
+                    },
                     0,
                 );
             }
@@ -2457,7 +2461,14 @@ impl Ui {
             960,
         );
         if chart.partial {
-            self.text(492, 521, "Incomplete readings", 17, p.muted, 730);
+            self.text(
+                460,
+                521,
+                "Gaps and muted bars indicate missing data",
+                17,
+                p.muted,
+                855,
+            );
         }
     }
 

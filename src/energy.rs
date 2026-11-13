@@ -78,6 +78,7 @@ impl Period {
 #[derive(serde::Serialize)]
 pub struct Chart {
     pub bars: Vec<Option<f64>>,
+    pub partial_bars: Vec<bool>,
     pub unit: &'static str,
     pub total: Option<f64>,
     pub partial: bool,
@@ -157,7 +158,8 @@ impl Rate {
 impl Chart {
     pub fn csv(&self) -> String {
         use std::fmt::Write as _;
-        let mut csv = String::from("from_unix,to_unix,value,unit,window_partial\r\n");
+        let mut csv =
+            String::from("from_unix,to_unix,value,unit,window_partial,bucket_partial\r\n");
         let count = self.bars.len() as u64;
         let window = self.to - self.from;
         for (index, value) in self.bars.iter().enumerate() {
@@ -165,8 +167,12 @@ impl Chart {
             let from = self.from + (window * index).div_ceil(count);
             let to = self.from + (window * (index + 1)).div_ceil(count);
             let value = value.map_or_else(String::new, |value| value.to_string());
-            writeln!(csv, "{from},{to},{value},{},{}\r", self.unit, self.partial)
-                .expect("writing to a String");
+            writeln!(
+                csv,
+                "{from},{to},{value},{},{},{}\r",
+                self.unit, self.partial, self.partial_bars[index as usize]
+            )
+            .expect("writing to a String");
         }
         csv
     }
@@ -242,6 +248,7 @@ mod tests {
     fn csv_preserves_zero_and_missing_buckets_with_chart_boundaries() {
         let chart = Chart {
             bars: vec![Some(0.0), None, Some(1.25)],
+            partial_bars: vec![false, true, true],
             unit: "kWh",
             total: Some(1.25),
             partial: true,
@@ -251,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             chart.csv(),
-            "from_unix,to_unix,value,unit,window_partial\r\n100,104,0,kWh,true\r\n104,107,,kWh,true\r\n107,110,1.25,kWh,true\r\n"
+            "from_unix,to_unix,value,unit,window_partial,bucket_partial\r\n100,104,0,kWh,true,false\r\n104,107,,kWh,true,true\r\n107,110,1.25,kWh,true,true\r\n"
         );
     }
 
@@ -264,6 +271,7 @@ mod tests {
         assert!(Rate::Gas.save(&mut rates, "1.2345").is_err());
         let chart = Chart {
             bars: Vec::new(),
+            partial_bars: Vec::new(),
             unit: "kWh",
             total: Some(3.0),
             partial: true,
@@ -352,7 +360,11 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
                     *value = value
                         .zip(secondary.get(&time).copied().flatten())
                         .map(|(a, b)| {
-                            if meter == Meter::Electricity && time > start && time <= end {
+                            if meter == Meter::Electricity
+                                && time > start
+                                && time <= end
+                                && (time - start).is_multiple_of(interval)
+                            {
                                 *tariff_usage[0].get_or_insert(0.0) += a;
                                 *tariff_usage[1].get_or_insert(0.0) += b;
                             }
@@ -362,7 +374,7 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
             }
         }
     }
-    let mut sums = vec![(0.0, 0); buckets];
+    let mut sums = vec![(0.0, 0u32); buckets];
     let mut observed = 0;
     for (time, reading) in readings {
         if time <= start || time > end {
@@ -371,6 +383,9 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
         let Some(reading) = reading else {
             continue;
         };
+        if !(time - start).is_multiple_of(interval) {
+            continue;
+        }
         let index = (((time - start - 1) * buckets as u64) / window) as usize;
         sums[index].0 += reading;
         sums[index].1 += 1;
@@ -378,6 +393,15 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
     }
     let sum: f64 = sums.iter().map(|(sum, _)| *sum).sum();
     let total = (!period.flow() && observed > 0).then_some(sum);
+    let expected_before =
+        |bucket: usize| (window * bucket as u64).div_ceil(buckets as u64) / interval;
+    let partial_bars = sums
+        .iter()
+        .enumerate()
+        .map(|(index, (_, count))| {
+            partial || u64::from(*count) < expected_before(index + 1) - expected_before(index)
+        })
+        .collect();
     let bars = sums
         .into_iter()
         .map(|(sum, count)| {
@@ -392,6 +416,7 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
         .collect();
     Ok(Chart {
         bars,
+        partial_bars,
         unit: meter.unit(period),
         total,
         partial: partial || observed < window / interval,

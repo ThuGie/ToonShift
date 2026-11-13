@@ -35,7 +35,7 @@ curl -H "Authorization: Bearer $TOONSHIFT_TOKEN" http://127.0.0.1:18082/v1/statu
 | `PUT /v1/preset` | `{"id":1}` | Selects Comfort (0), Home (1), Sleep (2), Away (3), or Vacation (4) |
 | `PUT /v1/hold` | `{"preset":1,"mode":"until_next_period"}` | Applies a preset from 0 to 3 until the next scheduled period. Use `"indefinite"` to hold until manually changed. Resume through `PUT /v1/schedule` |
 | `GET /v1/energy?meter=electricity&period=day` | — | Time bounds, chart buckets, unit, recorded total, and a flag for incomplete readings |
-| `GET /v1/energy.csv?meter=electricity&period=day` | — | Downloadable CSV of the same chart buckets. Times are Unix seconds with an exclusive lower bound and inclusive upper bound. Missing readings have an empty value and `window_partial` applies to the whole chart |
+| `GET /v1/energy.csv?meter=electricity&period=day` | — | Downloadable CSV of the same chart buckets. Times are Unix seconds with an exclusive lower bound and inclusive upper bound. Missing readings have an empty value. `window_partial` applies to the whole chart and `bucket_partial` flags incomplete buckets |
 | `GET /v1/vacations` | — | Firmware vacation entries with ID and Unix start and end seconds |
 | `POST /v1/vacations` | `{"start":1800000000,"end":1800086400}` | Adds a future, non-overlapping period using the stored Vacation preset |
 | `PUT /v1/vacations` | `{"id":"…","start":1800000000,"end":1800086400}` | Changes the dates of an existing future vacation |

@@ -17,6 +17,9 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Gaps and muted bars indicate missing data" => {
+                "Gaten en grijze balken tonen ontbrekende data"
+            }
             "Just received" => "Zojuist ontvangen",
             "min ago" => "min geleden",
             "Recorded flow" => "Gemeten aanvoer",
