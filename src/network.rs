@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::Ipv4Addr;
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixDatagram;
@@ -9,6 +10,53 @@ pub struct Join {
     pub password: String,
     pub encryption: String,
     pub auth: String,
+    pub address: Option<StaticIpv4>,
+}
+
+pub struct StaticIpv4 {
+    ip: Ipv4Addr,
+    mask: Ipv4Addr,
+    gateway: Ipv4Addr,
+    dns: Ipv4Addr,
+}
+
+impl StaticIpv4 {
+    pub fn parse(input: [&str; 4]) -> Option<Self> {
+        let [ip, mask, gateway, dns] = input.map(|field| field.trim().parse::<Ipv4Addr>().ok());
+        let (ip, mask, gateway, dns) = (ip?, mask?, gateway?, dns?);
+        let bits = u32::from(mask);
+        let prefix = bits.leading_ones();
+        if !(1..=30).contains(&prefix) || bits != u32::MAX << (32 - prefix) {
+            return None;
+        }
+        let network = u32::from(ip) & bits;
+        let broadcast = network | !bits;
+        let valid = |addr: Ipv4Addr| {
+            !(addr.is_unspecified()
+                || addr.is_loopback()
+                || addr.is_multicast()
+                || addr.is_broadcast())
+        };
+        if ![ip, gateway, dns].into_iter().all(valid)
+            || u32::from(gateway) & bits != network
+            || [ip, gateway]
+                .into_iter()
+                .any(|addr| [network, broadcast].contains(&u32::from(addr)))
+            || ip == gateway
+        {
+            return None;
+        }
+        Some(Self {
+            ip,
+            mask,
+            gateway,
+            dns,
+        })
+    }
+
+    fn xml(&self) -> String {
+        format!("<type>static</type><ipaddress>{}</ipaddress><netmask>{}</netmask><default_gateway>{}</default_gateway><nameserver>{}</nameserver>", self.ip, self.mask, self.gateway, self.dns)
+    }
 }
 
 pub struct Connection {
@@ -50,6 +98,20 @@ fn parse_connection(status: &str, signal: &str) -> Option<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_static_ipv4_and_uses_firmware_field_names() {
+        let address =
+            StaticIpv4::parse(["192.168.1.20", "255.255.255.0", "192.168.1.1", "1.1.1.1"]).unwrap();
+        assert_eq!(address.xml(), "<type>static</type><ipaddress>192.168.1.20</ipaddress><netmask>255.255.255.0</netmask><default_gateway>192.168.1.1</default_gateway><nameserver>1.1.1.1</nameserver>");
+        assert!(
+            StaticIpv4::parse(["192.168.1.20", "255.0.255.0", "192.168.1.1", "1.1.1.1"]).is_none()
+        );
+        assert!(
+            StaticIpv4::parse(["192.168.1.20", "255.255.255.0", "192.168.2.1", "1.1.1.1"])
+                .is_none()
+        );
+    }
 
     #[test]
     fn reports_association_without_an_address_and_filters_bad_signal() {
@@ -160,14 +222,25 @@ fn saved_network() -> Result<Option<(Join, String)>, String> {
     if name.is_empty() || field("disabled") == "1" {
         return Ok(None);
     }
-    if field("configtype") != "dhcp" {
-        return Err("Use stock setup to replace an existing static Wi-Fi configuration.".into());
-    }
+    let address = match field("configtype") {
+        "dhcp" => None,
+        "static" => Some(
+            StaticIpv4::parse([
+                field("static_ipaddress"),
+                field("static_netmask"),
+                field("static_gateway"),
+                field("static_nameserver"),
+            ])
+            .ok_or("Could not snapshot the existing static IPv4 configuration.")?,
+        ),
+        _ => return Err("Unsupported saved Wi-Fi address configuration.".into()),
+    };
     let previous = Join {
         name: name.into(),
         password: field("wifi_key").into(),
         encryption: field("wifi_enc").into(),
         auth: field("wifi_auth").into(),
+        address,
     };
     previous
         .validate()
@@ -184,11 +257,14 @@ pub fn join(join: Join) -> Result<(), String> {
         return Err(error);
     }
     #[cfg(unix)]
-    if wait_for_connection(&join.name, deadline) {
+    if wait_for_connection(&join, deadline) {
         return Ok(());
     }
     if let Some((previous, bssid)) = previous {
-        if matches!(send_join(&previous, &bssid), Ok(Ok(()))) {
+        #[cfg(unix)]
+        if matches!(send_join(&previous, &bssid), Ok(Ok(())))
+            && wait_for_connection(&previous, Instant::now() + Duration::from_secs(15))
+        {
             return Err("Connection failed. Previous Wi-Fi settings restored.".into());
         }
         return Err(
@@ -200,7 +276,7 @@ pub fn join(join: Join) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn wait_for_connection(name: &str, deadline: Instant) -> bool {
+fn wait_for_connection(join: &Join, deadline: Instant) -> bool {
     let path = format!("/run/toonshift-wpa-{}", std::process::id());
     let _ = std::fs::remove_file(&path);
     let Ok(socket) = UnixDatagram::bind(&path) else {
@@ -221,10 +297,18 @@ fn wait_for_connection(name: &str, deadline: Instant) -> bool {
                         let connected = status.lines().any(|line| line == "wpa_state=COMPLETED");
                         let selected = status
                             .lines()
-                            .any(|line| line.strip_prefix("ssid=") == Some(name));
-                        let has_address = status.lines().any(|line| {
-                            line.starts_with("ip_address=") && line != "ip_address=0.0.0.0"
-                        });
+                            .any(|line| line.strip_prefix("ssid=") == Some(&join.name));
+                        let has_address = status
+                            .lines()
+                            .filter_map(|line| line.strip_prefix("ip_address="))
+                            .filter_map(|value| value.parse::<Ipv4Addr>().ok())
+                            .any(|address| {
+                                !address.is_unspecified()
+                                    && join
+                                        .address
+                                        .as_ref()
+                                        .is_none_or(|expected| address == expected.ip)
+                            });
                         if connected && selected && has_address {
                             return Some(());
                         }
@@ -265,7 +349,11 @@ fn send_join(join: &Join, bssid: &str) -> std::io::Result<Result<(), String>> {
     } else {
         format!("<bssid>{}</bssid>", xml(bssid))
     };
-    write!(connection, "<action class=\"invoke\" uuid=\"{uuid}\" destuuid=\"{host}:hcb_netcon\" serviceid=\"urn:hcb-hae-com:serviceId:NetworkInformation\" requestid=\"{id}\"><u:SetWirelessNetworkInformation xmlns:u=\"urn:hcb-hae-com:service:NetworkInformation:1\"><iface>wlan0</iface><type>dhcp</type><essid>{}</essid><enc>{}</enc><auth>{}</auth><key>{}</key>{bssid}</u:SetWirelessNetworkInformation></action>\0",
+    let address = join
+        .address
+        .as_ref()
+        .map_or_else(|| "<type>dhcp</type>".into(), StaticIpv4::xml);
+    write!(connection, "<action class=\"invoke\" uuid=\"{uuid}\" destuuid=\"{host}:hcb_netcon\" serviceid=\"urn:hcb-hae-com:serviceId:NetworkInformation\" requestid=\"{id}\"><u:SetWirelessNetworkInformation xmlns:u=\"urn:hcb-hae-com:service:NetworkInformation:1\"><iface>wlan0</iface>{address}<essid>{}</essid><enc>{}</enc><auth>{}</auth><key>{}</key>{bssid}</u:SetWirelessNetworkInformation></action>\0",
         xml(&join.name), xml(&join.encryption), xml(&join.auth), xml(&join.password))?;
     let mut reader = BufReader::new(connection);
     let mut frame = Vec::new();

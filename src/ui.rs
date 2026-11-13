@@ -62,6 +62,8 @@ pub enum Action {
     HiddenNetwork,
     CloseNetworkForm,
     NetworkField(bool),
+    StaticWifi(bool),
+    StaticWifiField(usize),
     Key(char),
     Backspace,
     KeyboardMode,
@@ -570,6 +572,18 @@ impl Ui {
                     form.password_field = password;
                 }
             }
+            Action::StaticWifi(enabled) => {
+                if let Some(form) = &mut self.wifi {
+                    form.static_ipv4 = enabled;
+                    form.address_error = false;
+                }
+            }
+            Action::StaticWifiField(index) => {
+                if let Some(form) = &mut self.wifi {
+                    form.address_field = index;
+                    form.address_error = false;
+                }
+            }
             Action::Key(key) => {
                 if self.page == Page::Vacations {
                     if let Some(entry) = &mut self.repository {
@@ -584,6 +598,13 @@ impl Ui {
                         }
                     }
                 } else if let Some(form) = &mut self.wifi {
+                    if form.static_ipv4 {
+                        let input = &mut form.address_fields[form.address_field];
+                        if input.len() < 15 && (key.is_ascii_digit() || key == '.') {
+                            input.push(key);
+                        }
+                        return None;
+                    }
                     let target = if form.password_field {
                         &mut form.join.password
                     } else {
@@ -601,7 +622,9 @@ impl Ui {
             }
             Action::Backspace => {
                 if let Some(form) = &mut self.wifi {
-                    if form.password_field {
+                    if form.static_ipv4 {
+                        form.address_fields[form.address_field].pop();
+                    } else if form.password_field {
                         form.join.password.pop();
                     } else {
                         form.join.name.pop();
@@ -807,7 +830,12 @@ impl Ui {
                 encryption,
                 auth,
                 password: String::new(),
+                address: None,
             },
+            static_ipv4: false,
+            address_fields: Default::default(),
+            address_field: 0,
+            address_error: false,
             hidden: network.is_none(),
             password_field,
             shift: false,
@@ -816,6 +844,16 @@ impl Ui {
     }
 
     pub fn take_wifi(&mut self) -> Option<crate::network::Join> {
+        let form = self.wifi.as_mut()?;
+        if form.static_ipv4 {
+            form.join.address = crate::network::StaticIpv4::parse(
+                form.address_fields.each_ref().map(String::as_str),
+            );
+            if form.join.address.is_none() {
+                form.address_error = true;
+                return None;
+            }
+        }
         self.wifi.take().map(|form| form.join)
     }
 
@@ -1141,6 +1179,10 @@ impl Ui {
     }
 
     fn wifi_keyboard(&mut self, form: &WifiForm, p: &Palette) {
+        if form.static_ipv4 {
+            self.wifi_static_address(form, p);
+            return;
+        }
         let open = matches!(form.join.auth.as_str(), "OPEN" | "NONE");
         self.text(56, 148, "Join Wi-Fi", 28, p.text, 960);
         let name = if form.join.name.is_empty() {
@@ -1183,6 +1225,72 @@ impl Ui {
             p,
             false,
             Action::CloseNetworkForm,
+        );
+        self.button(
+            Rect(285, 473, 235, 52),
+            "Static IPv4",
+            p,
+            false,
+            Action::StaticWifi(true),
+        );
+        self.button(
+            Rect(752, 473, 215, 52),
+            "Join network",
+            p,
+            true,
+            Action::JoinNetwork,
+        );
+    }
+
+    fn wifi_static_address(&mut self, form: &WifiForm, p: &Palette) {
+        self.text(56, 148, "Static IPv4", 28, p.text, 960);
+        for (index, label) in ["IP address", "Subnet mask", "Gateway", "DNS server"]
+            .into_iter()
+            .enumerate()
+        {
+            let x = 56 + 228 * index;
+            self.text(x, 190, label, 20, p.muted, x + 220);
+            let value = &form.address_fields[index];
+            self.button(
+                Rect(x, 204, 215, 55),
+                if value.is_empty() { "–" } else { value },
+                p,
+                index == form.address_field,
+                Action::StaticWifiField(index),
+            );
+        }
+        for (index, key) in "1234567890.".chars().enumerate() {
+            self.button(
+                Rect(56 + 76 * index, 291, 67, 55),
+                &key.to_string(),
+                p,
+                false,
+                Action::Key(key),
+            );
+        }
+        self.button(
+            Rect(56, 363, 190, 47),
+            "Backspace",
+            p,
+            false,
+            Action::Backspace,
+        );
+        if form.address_error {
+            self.text(
+                56,
+                448,
+                "Check the IPv4 address, subnet mask, gateway and DNS server.",
+                19,
+                p.muted,
+                963,
+            );
+        }
+        self.button(
+            Rect(56, 473, 245, 52),
+            "Back to Wi-Fi credentials",
+            p,
+            false,
+            Action::StaticWifi(false),
         );
         self.button(
             Rect(752, 473, 215, 52),
@@ -3094,6 +3202,10 @@ pub struct NetworkRow {
 }
 
 struct WifiForm {
+    static_ipv4: bool,
+    address_fields: [String; 4],
+    address_field: usize,
+    address_error: bool,
     join: crate::network::Join,
     hidden: bool,
     password_field: bool,

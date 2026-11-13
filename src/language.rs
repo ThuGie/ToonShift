@@ -17,6 +17,14 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "IP address" => "IP-adres",
+            "Subnet mask" => "Subnetmasker",
+            "Gateway" => "Gateway",
+            "DNS server" => "DNS-server",
+            "Back to Wi-Fi credentials" => "Terug naar Wi-Fi-inloggegevens",
+            "Check the IPv4 address, subnet mask, gateway and DNS server." => {
+                "Controleer het IPv4-adres, subnetmasker, gateway en DNS-server."
+            }
             "Waiting for IP address" => "Wachten op IP-adres",
             "Wi-Fi disconnected" => "Wi-Fi niet verbonden",
             "Wi-Fi connection status unavailable" => "Wi-Fi-verbindingsstatus niet beschikbaar",
