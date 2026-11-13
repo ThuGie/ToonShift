@@ -17,6 +17,8 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Roll back" => "Terugzetten",
+            "Restoring previous version…" => "Vorige versie terugzetten…",
             "Export diagnostics" => "Diagnostiek exporteren",
             "Exporting diagnostics…" => "Diagnostiek exporteren…",
             "Saved diagnostics.json in the ToonShift data directory." => {

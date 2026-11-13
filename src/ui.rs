@@ -95,6 +95,7 @@ pub enum Action {
     CloseLocationSearch,
     UseLocationResult(usize, usize),
     UpdatePlugin(usize),
+    RollbackPlugin(usize),
     DashboardPage(usize),
     EditTiles,
     Tile(usize),
@@ -1998,6 +1999,14 @@ impl Ui {
                     p,
                     true,
                     Action::UpdatePlugin(index),
+                );
+            } else if installed && plugin.previous_release.is_some() {
+                self.button(
+                    Rect(608, y + 11, 150, 58),
+                    "Roll back",
+                    p,
+                    false,
+                    Action::RollbackPlugin(index),
                 );
             }
             self.button(

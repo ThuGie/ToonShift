@@ -41,6 +41,8 @@ A package with `source: "wasm"` runs a WebAssembly module in a Wasmi interpreter
 
 An `https_json` package can also include `wasm`. ToonShift fetches the configured public HTTPS URL and copies the response into the module's exported `input_buffer() -> i32`. Two bytes precede the response. The first is 0 for forecast or 1 for location search. The second is 0 for English or 1 for Dutch. The module's `render(i32) -> i64` receives the total input length and returns an output pointer in the high 32 bits and its length in the low 32 bits. The output is UTF-8 JSON up to 4 KiB, either `{value, detail, rows: [{date, range, condition}]}` or an array of `{name, latitude, longitude}` search results. Modules run without imports and with bounded memory and fuel. Existing declarative packages still load.
 
+The Store checks WebAssembly imports, exported signatures and initial memory limits before activating an update. After a successful update, **Roll back** restores the previous cached package with the same plugin ID, dashboard position and settings.
+
 Export linear memory as `memory` and a function `render(i32) -> i64`. The argument is the input byte length. Return the output address in the high 32 bits and the UTF-8 byte length in the low 32 bits. The output becomes the tile's text. Execution uses 100,000 fuel, at most 128 KiB of linear memory, and at most 256 output bytes. The host supplies no imports, filesystem, network, or heating controls. The data worker runs plugins outside the touchscreen loop. A trap produces an unavailable tile.
 
 The Room summary package contains executable code, with its WAT source in the plugin repository. Weather and existing declarative feeds retain their existing package interface.

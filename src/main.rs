@@ -664,6 +664,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     persist = false;
                 }
             }
+            Some(Action::RollbackPlugin(index)) => {
+                if let Some(plugin) = catalog.get(index).filter(|_| !installing).cloned() {
+                    let sender = install_sender.clone();
+                    installing = true;
+                    catalog_message = Some("Restoring previous version…".into());
+                    std::thread::spawn(move || {
+                        let result = plugins::rollback(root, &plugin);
+                        let _ = sender.send((plugin.id, result));
+                    });
+                }
+                persist = false;
+            }
             Some(action @ (Action::Toggle(index) | Action::UpdatePlugin(index))) => {
                 let plugin = &catalog[index];
                 let id = &plugin.id;

@@ -45,6 +45,8 @@ pub struct Plugin {
     pub artifact: Option<Artifact>,
     #[serde(skip)]
     pub installed_release: Option<String>,
+    #[serde(skip)]
+    pub previous_release: Option<String>,
 }
 
 impl Plugin {
@@ -286,6 +288,12 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
     {
         return Err("Plugin package does not match the catalog entry".into());
     }
+    if let Some(code) = &package.wasm {
+        crate::plugin_runtime::validate(
+            &crate::plugin_runtime::decode(code)?,
+            matches!(package.source, Source::HttpsJson),
+        )?;
+    }
     let dir = root.join("packages");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let temporary = path.with_extension("tmp");
@@ -293,7 +301,46 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
     file.write_all(&response)
         .and_then(|_| file.sync_all())
         .map_err(|err| err.to_string())?;
+    if let Some((bytes, current)) = read_package(&path, &plugin.id) {
+        if current.release != package.release {
+            let previous = path.with_extension("previous");
+            let staged = path.with_extension("previous.tmp");
+            let mut file = File::create(&staged).map_err(|err| err.to_string())?;
+            file.write_all(&bytes)
+                .and_then(|_| file.sync_all())
+                .and_then(|_| fs::rename(staged, previous))
+                .map_err(|err| err.to_string())?;
+        }
+    }
     fs::rename(temporary, path).map_err(|err| err.to_string())
+}
+
+pub fn rollback(root: &Path, plugin: &Plugin) -> Result<(), String> {
+    let path = plugin
+        .artifact
+        .as_ref()
+        .and_then(|artifact| artifact.package_file(root, &plugin.id))
+        .ok_or("Invalid plugin package origin")?;
+    let previous = path.with_extension("previous");
+    let (_, candidate) = read_package(&previous, &plugin.id).ok_or("No previous plugin version")?;
+    if let Some(code) = candidate.wasm {
+        crate::plugin_runtime::validate(
+            &crate::plugin_runtime::decode(&code)?,
+            matches!(candidate.source, Source::HttpsJson),
+        )?;
+    }
+    fs::rename(previous, path).map_err(|error| error.to_string())
+}
+
+fn read_package(path: &Path, id: &str) -> Option<(Vec<u8>, Plugin)> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > crate::download::PACKAGE_LIMIT as u64 {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let plugin: Plugin = serde_json::from_slice(&bytes).ok()?;
+    (plugin.id == id && plugin.artifact.is_none() && valid_plugin(&plugin))
+        .then_some((bytes, plugin))
 }
 
 fn valid_plugin(plugin: &Plugin) -> bool {
@@ -380,16 +427,11 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                     .as_ref()
                     .and_then(|artifact| artifact.package_file(root, &plugin.id))
                 {
-                    if let Some(installed) = fs::read(package)
-                        .ok()
-                        .filter(|bytes| bytes.len() <= crate::download::PACKAGE_LIMIT)
-                        .and_then(|bytes| serde_json::from_slice::<Plugin>(&bytes).ok())
-                        .filter(|installed| {
-                            installed.id == plugin.id
-                                && installed.artifact.is_none()
-                                && valid_plugin(installed)
-                        })
-                    {
+                    if let Some((_, installed)) = read_package(&package, &plugin.id) {
+                        plugin.previous_release =
+                            read_package(&package.with_extension("previous"), &plugin.id)
+                                .map(|(_, previous)| previous.release)
+                                .filter(|release| release != &installed.release);
                         plugin.installed_release = Some(installed.release);
                         plugin.feed = installed.feed;
                         plugin.metric = installed.metric;
