@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, ToSocketAddrs};
@@ -38,6 +39,15 @@ fn public_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 pub fn public_json(ca: &Path, url: &str) -> Result<Vec<u8>, String> {
+    public_request(Some(ca), url, &BTreeMap::new(), None)
+}
+
+pub fn public_request(
+    ca: Option<&Path>,
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    body: Option<&str>,
+) -> Result<Vec<u8>, String> {
     let authority = url
         .strip_prefix("https://")
         .and_then(|rest| rest.split_once('/'))
@@ -71,7 +81,39 @@ pub fn public_json(ca: &Path, url: &str) -> Result<Vec<u8>, String> {
         .or_else(|| firmware_dns(authority))
         .ok_or("Plugin feeds require a public IPv4 destination")?;
     let resolve = format!("{authority}:443:{endpoint}");
-    fetch(ca, url, Some(&resolve), 32768)
+    transfer(ca, url, Some(&resolve), 32768, headers, body)
+}
+
+#[cfg(target_os = "linux")]
+pub fn approved_request(
+    ca: Option<&Path>,
+    origin: &str,
+    path: &str,
+    headers: &BTreeMap<String, String>,
+    body: Option<&str>,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let (host, port) =
+        crate::plugin_screen::origin(origin).ok_or("Invalid approved HTTPS endpoint")?;
+    let endpoint = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut endpoints| {
+            endpoints.find_map(|endpoint| match endpoint.ip() {
+                std::net::IpAddr::V4(ip) if public_ipv4(ip) || ip.is_private() => Some(ip),
+                _ => None,
+            })
+        })
+        .ok_or("HTTPS endpoint requires a LAN or public IPv4 address")?;
+    let resolve = format!("{host}:{port}:{endpoint}");
+    transfer(
+        ca,
+        &format!("{origin}{path}"),
+        Some(&resolve),
+        limit,
+        headers,
+        body,
+    )
 }
 
 fn firmware_dns(host: &str) -> Option<Ipv4Addr> {
@@ -115,6 +157,17 @@ fn firmware_dns(host: &str) -> Option<Ipv4Addr> {
 }
 
 fn fetch(ca: &Path, url: &str, resolve: Option<&str>, limit: usize) -> Result<Vec<u8>, String> {
+    transfer(Some(ca), url, resolve, limit, &BTreeMap::new(), None)
+}
+
+fn transfer(
+    ca: Option<&Path>,
+    url: &str,
+    resolve: Option<&str>,
+    limit: usize,
+    headers: &BTreeMap<String, String>,
+    body: Option<&str>,
+) -> Result<Vec<u8>, String> {
     let mut curl = Command::new("/usr/bin/curl");
     curl.args([
         "-q",
@@ -128,19 +181,22 @@ fn fetch(ca: &Path, url: &str, resolve: Option<&str>, limit: usize) -> Result<Ve
         "10",
         "--max-filesize",
         &limit.to_string(),
-        "--cacert",
-    ])
-    .arg(ca);
+    ]);
+    if let Some(ca) = ca {
+        curl.arg("--cacert").arg(ca);
+    }
     if let Some(resolve) = resolve {
         curl.args(["--noproxy", "*", "--resolve", resolve]);
     }
+    let input = request_config(url, headers, body)?;
     let mut child = curl
-        .arg("--")
-        .arg(url)
+        .args(["--config", "-"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| error.to_string())?;
+    let write = child.stdin.take().unwrap().write_all(input.as_bytes());
     let mut response = Vec::new();
     let read = child
         .stdout
@@ -148,15 +204,71 @@ fn fetch(ca: &Path, url: &str, resolve: Option<&str>, limit: usize) -> Result<Ve
         .unwrap()
         .take(limit as u64 + 1)
         .read_to_end(&mut response);
-    if read.is_err() || response.len() > limit {
+    if write.is_err() || read.is_err() || response.len() > limit {
         let _ = child.kill();
     }
     let status = child.wait().map_err(|error| error.to_string())?;
+    write.map_err(|error| error.to_string())?;
     read.map_err(|error| error.to_string())?;
     if !status.success() || response.len() > limit {
         return Err("HTTPS request failed".into());
     }
     Ok(response)
+}
+
+fn request_config(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    body: Option<&str>,
+) -> Result<String, String> {
+    // Keep signed request headers and payloads out of the process argument list.
+    let quoted = |value: &str| -> Result<String, String> {
+        if value.chars().any(char::is_control) {
+            return Err("Invalid HTTP request argument".into());
+        }
+        Ok(format!(
+            "\"{}\"",
+            value.replace('\\', "\\\\").replace('"', "\\\"")
+        ))
+    };
+    if headers.len() > 16 || body.is_some_and(|body| body.len() > 4096) {
+        return Err("HTTP request exceeds the plugin limits".into());
+    }
+    let mut config = format!("url = {}\n", quoted(url)?);
+    for (name, value) in headers {
+        if name.is_empty()
+            || name.len() > 64
+            || value.len() > 2048
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+            || matches!(
+                name.to_ascii_lowercase().as_str(),
+                "host"
+                    | "content-length"
+                    | "transfer-encoding"
+                    | "connection"
+                    | "content-type"
+                    | "expect"
+                    | "upgrade"
+            )
+            || name.to_ascii_lowercase().starts_with("proxy-")
+        {
+            return Err("Invalid plugin HTTP header".into());
+        }
+        config.push_str(&format!(
+            "header = {}\n",
+            quoted(&format!("{name}: {value}"))?
+        ));
+    }
+    if let Some(body) = body {
+        if !matches!(body.as_bytes().first(), Some(b'{' | b'[')) {
+            return Err("Plugin request body must be a JSON object or array".into());
+        }
+        config.push_str("header = \"Content-Type: application/json\"\n");
+        config.push_str(&format!("data-binary = {}\n", quoted(body)?));
+    }
+    Ok(config)
 }
 
 pub fn query_value(value: &str) -> String {

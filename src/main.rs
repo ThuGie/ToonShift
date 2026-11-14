@@ -6,10 +6,10 @@ mod feed;
 mod language;
 mod network;
 mod plugin_runtime;
+mod plugin_screen;
 mod plugins;
 mod presets;
 mod schedule;
-mod smart_home;
 mod telemetry;
 mod thermostat;
 mod ui;
@@ -141,8 +141,6 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         energy: Some(&energy),
         diagnostics_message: None,
         firmware_version: None,
-        smart_switches: None,
-        smart_busy: false,
         history: None,
         ambient: false,
         location_results: None,
@@ -189,9 +187,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use ui::Action;
 
     let root = Path::new("/mnt/data/toon-rust");
-    if std::env::args().nth(1).as_deref() == Some("--setup-smart-home") {
-        return smart_home::setup(root).map_err(Into::into);
-    }
     if std::env::args().nth(1).as_deref() == Some("--api-client") {
         api::manage_clients(root, std::env::args().skip(2))?;
         return Ok(());
@@ -361,10 +356,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (diagnostics_sender, diagnostics_receiver) = std::sync::mpsc::channel();
     let mut exporting_diagnostics = false;
     let mut diagnostics_message = None;
-    let (smart_sender, smart_receiver) = std::sync::mpsc::channel();
-    let mut smart_switches = None;
-    let mut smart_busy = false;
-    let mut smart_setup_work = None;
     let (version_sender, version_receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = version_sender.send(thermostat::firmware_version());
@@ -405,9 +396,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut dirty = true;
     let mut ui = ui::Ui::new();
     let mut clock = device::time();
+    let (extension_sender, extension_receiver) = std::sync::mpsc::channel();
+    let mut extension_generation = 0_u64;
+    let mut extension_busy = false;
     let mut feed_poll = std::time::Instant::now();
     let mut hardware = advanced::State::new();
     loop {
+        if let Ok((generation, result)) = extension_receiver.try_recv() {
+            extension_busy = false;
+            if generation == extension_generation {
+                ui.extension_result(result);
+                dirty = true;
+            }
+        }
         if let Ok((sources, result)) = meter_receiver.try_recv() {
             meter_busy = false;
             if sources == settings.meter_sources {
@@ -568,17 +569,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             });
             dirty = true;
         }
-        if let Ok(result) = smart_receiver.try_recv() {
-            if let Some(discovery) = smart_setup_work.take() {
-                if let Some(rows) = ui.smart_setup_result(result, discovery) {
-                    smart_switches = Some(Ok(rows));
-                }
-            } else {
-                smart_switches = Some(result);
-            }
-            smart_busy = false;
-            dirty = true;
-        }
         if let Ok(result) = version_receiver.try_recv() {
             firmware_version = Some(result);
             dirty = true;
@@ -663,8 +653,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 energy: energy_chart.as_ref(),
                 diagnostics_message,
                 firmware_version: firmware_version.as_ref(),
-                smart_switches: smart_switches.as_ref(),
-                smart_busy,
                 history: heating_history.as_ref(),
                 ambient,
                 location_results: location_results.as_ref(),
@@ -694,6 +682,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             settings.tiles_per_page(),
         );
         match action {
+            Some(action @ (Action::OpenExtension(_) | Action::ExtensionButton(_))) => {
+                let button = match action {
+                    Action::OpenExtension(index) => {
+                        extension_generation = extension_generation.wrapping_add(1);
+                        if let Some(plugin) = catalog.get(index).filter(|plugin| {
+                            settings.installed.contains(&plugin.id)
+                                && matches!(plugin.source, plugins::Source::Interactive)
+                        }) {
+                            ui.open_extension(plugin.clone());
+                        }
+                        None
+                    }
+                    Action::ExtensionButton(index) => Some(index),
+                    _ => unreachable!(),
+                };
+                if extension_busy {
+                    ui.extension_result(Err(
+                        "Another plugin is still working. Reopen this tile to retry.".into(),
+                    ));
+                } else if let Some((plugin, allowed, origin, event)) = ui.extension_event(button) {
+                    extension_busy = true;
+                    let sender = extension_sender.clone();
+                    let generation = extension_generation;
+                    std::thread::spawn(move || {
+                        let result =
+                            plugin_screen::run_installed(root, &plugin, allowed, origin, event);
+                        let _ = sender.send((generation, result));
+                    });
+                }
+                persist = false;
+            }
             Some(Action::MeterSource(metric, index)) => {
                 if let Some(channel) = hardware
                     .devices
@@ -733,71 +752,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::Theme(theme)) => next.theme = theme,
             Some(Action::Appearance(appearance)) => next.appearance = appearance,
             Some(Action::Language(language)) => next.language = language,
-            Some(action @ (Action::SmartDiscover | Action::SmartSave)) => {
-                if !smart_busy {
-                    if let Some(config) = ui.smart_config() {
-                        let discovery = matches!(action, Action::SmartDiscover);
-                        smart_setup_work = Some(discovery);
-                        smart_busy = true;
-                        let sender = smart_sender.clone();
-                        std::thread::spawn(move || {
-                            let result = (|| {
-                                config.validate()?;
-                                let mut rows = config.list(root)?;
-                                if !discovery {
-                                    rows.retain(|row| config.switches.contains(&row.entity_id));
-                                    if rows.len() != config.switches.len() {
-                                        return Err(
-                                            "Some selected switches are no longer available."
-                                                .into(),
-                                        );
-                                    }
-                                    smart_home::save(root, &config)?;
-                                }
-                                rows.sort_by(|a, b| a.entity_id.cmp(&b.entity_id));
-                                Ok(rows)
-                            })();
-                            let _ = sender.send(result);
-                        });
-                    }
-                }
-                persist = false;
-            }
-            Some(Action::SmartDisconnect) => {
-                if !smart_busy {
-                    ui.finish_smart_disconnect();
-                    smart_busy = true;
-                    let sender = smart_sender.clone();
-                    std::thread::spawn(move || {
-                        let result = smart_home::disconnect(root)
-                            .and_then(|()| Err("Connect Home Assistant to get started.".into()));
-                        let _ = sender.send(result);
-                    });
-                }
-                persist = false;
-            }
-            Some(action @ (Action::SmartHome | Action::SmartSwitch(_, _))) => {
-                if !smart_busy {
-                    let change = match action {
-                        Action::SmartSwitch(index, on) => smart_switches
-                            .as_ref()
-                            .and_then(|result: &Result<Vec<smart_home::Switch>, String>| {
-                                result.as_ref().ok()
-                            })
-                            .and_then(|rows| rows.get(index))
-                            .map(|switch| (switch.entity_id.clone(), on)),
-                        _ => None,
-                    };
-                    if matches!(action, Action::SmartHome) || change.is_some() {
-                        smart_busy = true;
-                        let sender = smart_sender.clone();
-                        std::thread::spawn(move || {
-                            let _ = sender.send(smart_home::selected(root, change));
-                        });
-                    }
-                }
-                persist = false;
-            }
             Some(Action::ResetPreferences) => {
                 if installing {
                     error = Some(

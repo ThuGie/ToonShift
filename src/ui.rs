@@ -22,13 +22,13 @@ impl Rect {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
-    SmartHome,
     Home,
     Schedule,
     Store,
     Settings,
     Network,
     Plugin,
+    Extension,
     Presets,
     Vacations,
     Energy,
@@ -38,28 +38,45 @@ enum Page {
     Advanced,
 }
 
-#[derive(Default)]
-struct SmartSetup {
-    fields: [String; 2],
-    token: bool,
-    discovered: Option<Vec<crate::smart_home::Switch>>,
-    selected: std::collections::BTreeSet<usize>,
+struct Extension {
+    plugin: Plugin,
+    screen: crate::plugin_screen::Screen,
+    state: serde_json::Value,
+    editing: Option<usize>,
+    page: usize,
+    allowed: bool,
+    permission: usize,
+    approved_origin: Option<String>,
+    busy: bool,
     error: Option<String>,
+}
+
+impl Extension {
+    fn origin(&self) -> Option<&str> {
+        self.screen
+            .fields
+            .iter()
+            .find(|field| field.id == "https_origin")
+            .map(|field| field.value.as_str())
+            .or(self.approved_origin.as_deref())
+    }
+
+    fn ready(&self) -> bool {
+        if self.plugin.user_https_origin {
+            self.approved_origin.is_some() && self.origin() == self.approved_origin.as_deref()
+        } else {
+            self.allowed || self.plugin.https_hosts.is_empty()
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub enum Action {
-    SmartHome,
-    SmartSwitch(usize, bool),
-    SmartPage(usize),
-    SmartSetup,
-    SmartField(bool),
-    SmartDiscover,
-    SmartBack,
-    SmartSelect(usize),
-    SmartSave,
-    SmartConfirmDisconnect,
-    SmartDisconnect,
+    OpenExtension(usize),
+    ExtensionButton(usize),
+    ExtensionField(Option<usize>),
+    ExtensionPage(usize),
+    ExtensionAllow,
     StoreFilter(bool),
     MeterSource(crate::plugins::Metric, usize),
     AutomaticMeter(crate::plugins::Metric),
@@ -190,9 +207,7 @@ fn palette(settings: &Settings, hour: u8) -> Palette {
 }
 
 pub struct Ui {
-    smart_page: usize,
-    smart_setup: Option<SmartSetup>,
-    smart_disconnect: bool,
+    extension: Option<Extension>,
     hardware: hardware::Controls,
     pub pixels: Vec<u32>,
     font: Font,
@@ -236,9 +251,7 @@ pub struct Ui {
 impl Ui {
     pub fn new() -> Self {
         Self {
-            smart_page: 0,
-            smart_setup: None,
-            smart_disconnect: false,
+            extension: None,
             hardware: Default::default(),
             pixels: vec![0; WIDTH * HEIGHT],
             font: Font::from_bytes(
@@ -490,50 +503,49 @@ impl Ui {
             self.resetting_dashboard = false;
             self.wifi = None;
             self.repository = None;
-            self.smart_setup = None;
-            self.smart_disconnect = false;
+            self.extension = None;
         }
         match action {
-            Action::SmartHome => {
-                self.page = Page::SmartHome;
-                self.smart_setup = None;
-                self.smart_disconnect = false;
+            Action::OpenExtension(_) => {
+                self.extension = None;
+                self.page = Page::Extension;
+                self.wifi = None;
                 self.repository = None;
                 return Some(action);
             }
-            Action::SmartSetup => {
-                self.smart_setup = Some(SmartSetup::default());
-                self.smart_page = 0;
-                self.repository = Some(TextEntry {
-                    text: "https://".into(),
-                    ..Default::default()
-                });
-            }
-            Action::SmartField(token) => {
-                if let (Some(setup), Some(entry)) = (&mut self.smart_setup, &mut self.repository) {
-                    std::mem::swap(&mut entry.text, &mut setup.fields[usize::from(setup.token)]);
-                    setup.token = token;
-                    std::mem::swap(&mut entry.text, &mut setup.fields[usize::from(token)]);
-                    entry.symbols = false;
-                    entry.shift = false;
+            Action::ExtensionField(index) => {
+                if let Some(extension) = &mut self.extension {
+                    if let (Some(current), Some(entry)) =
+                        (extension.editing, self.repository.take())
+                    {
+                        extension.screen.fields[current].value = entry.text;
+                    }
+                    extension.editing = index;
+                    self.repository = index.map(|index| TextEntry {
+                        text: extension.screen.fields[index].value.clone(),
+                        ..Default::default()
+                    });
                 }
             }
-            Action::SmartSelect(index) => {
-                if let Some(setup) = &mut self.smart_setup {
-                    if !setup.selected.remove(&index) && setup.selected.len() < 32 {
-                        setup.selected.insert(index);
+            Action::ExtensionPage(page) => {
+                if let Some(extension) = &mut self.extension {
+                    extension.page = page;
+                }
+            }
+            Action::ExtensionAllow => {
+                if let Some(extension) = &mut self.extension {
+                    if extension.plugin.user_https_origin {
+                        extension.approved_origin = extension
+                            .origin()
+                            .filter(|origin| crate::plugin_screen::origin(origin).is_some())
+                            .map(str::to_owned);
+                    } else {
+                        extension.permission += 1;
+                        extension.allowed =
+                            extension.permission == extension.plugin.https_hosts.len();
                     }
                 }
             }
-            Action::SmartConfirmDisconnect => self.smart_disconnect = true,
-            Action::SmartBack => {
-                if let Some(setup) = &mut self.smart_setup {
-                    setup.discovered = None;
-                    setup.selected.clear();
-                    setup.error = None;
-                }
-            }
-            Action::SmartPage(page) => self.smart_page = page,
             Action::StoreFilter(installed_only) => {
                 self.store_installed_only = installed_only;
                 self.offset = 0;
@@ -699,7 +711,7 @@ impl Ui {
                         target.push(key);
                     }
                 } else if let Some(entry) = &mut self.repository {
-                    let limit = if self.smart_setup.as_ref().is_some_and(|setup| setup.token) {
+                    let limit = if self.page == Page::Extension {
                         4096
                     } else {
                         270
@@ -1010,13 +1022,13 @@ impl Ui {
         }
         self.text(900, 52, view.time, 24, p.muted, 992);
         match self.page {
-            Page::SmartHome => self.smart_home(view, &p),
             Page::Home => self.home(view, &p),
             Page::Schedule => self.schedule(view, &p),
             Page::Store => self.store(view, &p),
             Page::Settings => self.settings(view, &p),
             Page::Network => self.network(view, &p),
             Page::Plugin => self.plugin(view, &p),
+            Page::Extension => self.extension_screen(&p),
             Page::Presets => self.presets(view, &p),
             Page::Vacations => self.vacations(view, &p),
             Page::Energy => self.energy(view, &p),
@@ -1111,6 +1123,234 @@ impl Ui {
             p.muted,
             960,
         );
+    }
+
+    pub fn open_extension(&mut self, plugin: Plugin) {
+        self.extension = Some(Extension {
+            plugin,
+            screen: Default::default(),
+            state: Default::default(),
+            editing: None,
+            page: 0,
+            allowed: false,
+            permission: 0,
+            approved_origin: None,
+            busy: false,
+            error: None,
+        });
+    }
+
+    pub fn extension_event(
+        &mut self,
+        button: Option<usize>,
+    ) -> Option<(Plugin, bool, Option<String>, crate::plugin_screen::Event)> {
+        let extension = self.extension.as_mut()?;
+        if extension.busy {
+            return None;
+        }
+        if button.is_some() && !extension.ready() {
+            return None;
+        }
+        let action = match button {
+            Some(index) => extension.screen.buttons.get(index)?.id.clone(),
+            None => "open".into(),
+        };
+        extension.busy = true;
+        extension.error = None;
+        Some((
+            extension.plugin.clone(),
+            extension.allowed,
+            extension.approved_origin.clone(),
+            crate::plugin_screen::Event {
+                action,
+                language: if self.language == crate::language::Language::Dutch {
+                    "nl"
+                } else {
+                    "en"
+                },
+                fields: extension
+                    .screen
+                    .fields
+                    .iter()
+                    .map(|field| (field.id.clone(), field.value.clone()))
+                    .collect(),
+                state: extension.state.clone(),
+            },
+        ))
+    }
+
+    pub fn extension_result(
+        &mut self,
+        result: Result<(crate::plugin_screen::Screen, serde_json::Value), String>,
+    ) {
+        let Some(extension) = &mut self.extension else {
+            return;
+        };
+        extension.busy = false;
+        match result {
+            Ok((screen, state)) => {
+                extension.screen = screen;
+                extension.state = state;
+                extension.page = 0;
+            }
+            Err(error) => extension.error = Some(error),
+        }
+    }
+
+    fn extension_screen(&mut self, p: &Palette) {
+        let Some(extension) = self.extension.take() else {
+            return;
+        };
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.raw_text(
+            56,
+            144,
+            extension.plugin.title(self.language),
+            29,
+            p.text,
+            966,
+        );
+        let message = if extension.busy {
+            "Working…"
+        } else {
+            extension
+                .error
+                .as_deref()
+                .unwrap_or(&extension.screen.message)
+        };
+        self.raw_text(56, 178, message, 18, p.muted, 966);
+        if let (Some(index), Some(entry)) = (extension.editing, self.repository.as_ref()) {
+            let (symbols, shift) = (entry.symbols, entry.shift);
+            let field = &extension.screen.fields[index];
+            let visible = if field.secret {
+                "•".repeat(entry.text.len().min(32))
+            } else {
+                entry
+                    .text
+                    .chars()
+                    .rev()
+                    .take(70)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            };
+            self.raw_text(
+                56,
+                216,
+                &format!("{}  {}", field.label, visible),
+                19,
+                p.text,
+                965,
+            );
+            self.keyboard(symbols, shift, p);
+            self.button(
+                Rect(761, 474, 206, 49),
+                "Done",
+                p,
+                true,
+                Action::ExtensionField(None),
+            );
+        } else if !extension.busy {
+            let count = extension.screen.fields.len() + extension.screen.buttons.len();
+            let field_count = extension.screen.fields.len();
+            for index in (extension.page * 8..count).take(8) {
+                let slot = index % 8;
+                let (label, action) = if let Some(field) = extension.screen.fields.get(index) {
+                    if field.readonly {
+                        self.raw_text(
+                            72 + slot % 2 * 462,
+                            230 + slot / 2 * 59,
+                            if field.secret {
+                                &field.label
+                            } else {
+                                &field.value
+                            },
+                            17,
+                            p.muted,
+                            498 + slot % 2 * 462,
+                        );
+                        continue;
+                    }
+                    (&field.label, Action::ExtensionField(Some(index)))
+                } else {
+                    let button = index - field_count;
+                    if !extension.ready() {
+                        continue;
+                    }
+                    (
+                        &extension.screen.buttons[button].label,
+                        Action::ExtensionButton(button),
+                    )
+                };
+                self.button(
+                    Rect(56 + slot % 2 * 462, 197 + slot / 2 * 59, 445, 52),
+                    label,
+                    p,
+                    false,
+                    action,
+                );
+            }
+            if extension.page > 0 {
+                self.button(
+                    Rect(56, 478, 112, 46),
+                    "Previous",
+                    p,
+                    false,
+                    Action::ExtensionPage(extension.page - 1),
+                );
+            }
+            if (extension.page + 1) * 8 < count {
+                self.button(
+                    Rect(180, 478, 112, 46),
+                    "Next",
+                    p,
+                    false,
+                    Action::ExtensionPage(extension.page + 1),
+                );
+            }
+            if !extension.ready() {
+                let host = if extension.plugin.user_https_origin {
+                    extension
+                        .origin()
+                        .filter(|url| crate::plugin_screen::origin(url).is_some())
+                } else {
+                    extension
+                        .plugin
+                        .https_hosts
+                        .get(extension.permission)
+                        .map(String::as_str)
+                };
+                if let Some(host) = host {
+                    for (row, host) in host.as_bytes().chunks(50).enumerate() {
+                        self.raw_text(
+                            304,
+                            444 + row * 18,
+                            std::str::from_utf8(host).unwrap(),
+                            14,
+                            p.muted,
+                            965,
+                        );
+                    }
+                    self.button(
+                        Rect(761, 482, 206, 44),
+                        &if extension.plugin.user_https_origin {
+                            "Allow HTTPS".into()
+                        } else {
+                            format!(
+                                "Allow HTTPS {}/{}",
+                                extension.permission + 1,
+                                extension.plugin.https_hosts.len()
+                            )
+                        },
+                        p,
+                        true,
+                        Action::ExtensionAllow,
+                    );
+                }
+            }
+        }
+        self.extension = Some(extension);
     }
 
     fn location_search_view(&mut self, view: &View<'_>, p: &Palette) {
@@ -2340,8 +2580,9 @@ impl Ui {
                             .push((rect, Action::Energy(meter, crate::energy::Period::Day)));
                     }
                 }
-                if interactive && !editing && matches!(plugin.source, Source::SmartHome) {
-                    self.buttons.push((rect, Action::SmartHome));
+                if interactive && !editing && matches!(plugin.source, Source::Interactive) {
+                    self.buttons
+                        .push((rect, Action::OpenExtension(plugin_index)));
                 }
             } else {
                 self.text(x + 16, y + 47, id, 20, muted, end);
@@ -3010,6 +3251,15 @@ impl Ui {
                 );
             }
             let installed = view.settings.installed.contains(&plugin.id);
+            if installed && matches!(plugin.source, Source::Interactive) {
+                self.button(
+                    Rect(474, y + 11, 122, 58),
+                    "Open",
+                    p,
+                    false,
+                    Action::OpenExtension(index),
+                );
+            }
             if installed
                 && plugin.artifact.is_some()
                 && plugin.installed_release.as_deref() != Some(&plugin.release)
@@ -3315,13 +3565,6 @@ impl Ui {
             Action::ExportDiagnostics,
         );
         self.button(
-            Rect(373, 511, 280, 48),
-            "Smart home",
-            p,
-            false,
-            Action::SmartHome,
-        );
-        self.button(
             Rect(669, 511, 323, 48),
             "Reset preferences",
             p,
@@ -3330,275 +3573,6 @@ impl Ui {
         );
         if let Some(message) = view.diagnostics_message.filter(|_| view.error.is_none()) {
             self.text(32, 581, message, 18, p.muted, 990);
-        }
-    }
-
-    fn smart_home(&mut self, view: &View<'_>, p: &Palette) {
-        self.panel(Rect(32, 100, 960, 448), p.card, 26);
-        self.text(56, 155, "Smart home", 30, p.text, 730);
-        if view.smart_busy {
-            self.text(56, 220, "Checking Home Assistant…", 22, p.muted, 960);
-            return;
-        }
-        if self.smart_disconnect {
-            self.text(
-                56,
-                220,
-                "Remove the Home Assistant connection?",
-                23,
-                p.text,
-                960,
-            );
-            self.button(
-                Rect(56, 475, 210, 48),
-                "Cancel",
-                p,
-                false,
-                Action::SmartHome,
-            );
-            self.button(
-                Rect(752, 475, 215, 48),
-                "Disconnect",
-                p,
-                true,
-                Action::SmartDisconnect,
-            );
-            return;
-        }
-        if let Some(setup) = self.smart_setup.take() {
-            self.draw_smart_setup(&setup, p);
-            self.smart_setup = Some(setup);
-            return;
-        }
-        self.button(
-            Rect(510, 116, 228, 45),
-            "Connection setup",
-            p,
-            false,
-            Action::SmartSetup,
-        );
-        self.button(
-            Rect(754, 116, 215, 45),
-            "Refresh",
-            p,
-            false,
-            Action::SmartHome,
-        );
-        if view.root.join("home-assistant.json").is_file() {
-            self.button(
-                Rect(320, 480, 270, 45),
-                "Disconnect",
-                p,
-                false,
-                Action::SmartConfirmDisconnect,
-            );
-        }
-        match view.smart_switches {
-            Some(Ok(rows)) => {
-                let page = self.smart_page.min(rows.len().saturating_sub(1) / 4);
-                if rows.is_empty() {
-                    self.text(56, 220, "No selected switches found", 22, p.muted, 960);
-                }
-                for (row, switch) in rows.iter().skip(page * 4).take(4).enumerate() {
-                    let y = 180 + row * 68;
-                    self.raw_text(56, y + 32, switch.name(), 23, p.text, 575);
-                    let (label, state) = match switch.state.as_str() {
-                        "on" => ("On", Some(true)),
-                        "off" => ("Off", Some(false)),
-                        _ => ("Unavailable", None),
-                    };
-                    self.text(585, y + 32, label, 20, p.muted, 745);
-                    if let Some(on) = state {
-                        self.button(
-                            Rect(754, y, 215, 52),
-                            if on { "Switch off" } else { "Switch on" },
-                            p,
-                            on,
-                            Action::SmartSwitch(page * 4 + row, !on),
-                        );
-                    }
-                }
-                if page > 0 {
-                    self.button(
-                        Rect(56, 480, 170, 45),
-                        "Previous",
-                        p,
-                        false,
-                        Action::SmartPage(page - 1),
-                    );
-                }
-                if (page + 1) * 4 < rows.len() {
-                    self.button(
-                        Rect(799, 480, 170, 45),
-                        "Next",
-                        p,
-                        false,
-                        Action::SmartPage(page + 1),
-                    );
-                }
-            }
-            Some(Err(error)) => self.text(56, 220, error, 20, p.muted, 960),
-            None => {}
-        }
-    }
-
-    fn draw_smart_setup(&mut self, setup: &SmartSetup, p: &Palette) {
-        if let Some(rows) = &setup.discovered {
-            let page = self.smart_page.min(rows.len().saturating_sub(1) / 4);
-            self.text(56, 190, "Choose up to 32 switches", 22, p.text, 960);
-            if rows.is_empty() {
-                self.text(
-                    56,
-                    245,
-                    "No switches found in Home Assistant",
-                    22,
-                    p.muted,
-                    960,
-                );
-            }
-            for (row, switch) in rows.iter().skip(page * 4).take(4).enumerate() {
-                let index = page * 4 + row;
-                let y = 208 + row * 52;
-                self.raw_text(56, y + 28, switch.name(), 20, p.text, 740);
-                let selected = setup.selected.contains(&index);
-                self.button(
-                    Rect(754, y, 215, 42),
-                    if selected { "Selected" } else { "Select" },
-                    p,
-                    selected,
-                    Action::SmartSelect(index),
-                );
-            }
-            if page > 0 {
-                self.button(
-                    Rect(280, 474, 135, 48),
-                    "Previous",
-                    p,
-                    false,
-                    Action::SmartPage(page - 1),
-                );
-            }
-            if (page + 1) * 4 < rows.len() {
-                self.button(
-                    Rect(430, 474, 135, 48),
-                    "Next",
-                    p,
-                    false,
-                    Action::SmartPage(page + 1),
-                );
-            }
-            if !setup.selected.is_empty() {
-                self.button(
-                    Rect(754, 474, 215, 48),
-                    "Save connection",
-                    p,
-                    true,
-                    Action::SmartSave,
-                );
-            }
-        } else if let Some(entry) = self.repository.take() {
-            self.button(
-                Rect(56, 162, 447, 44),
-                "Home Assistant HTTPS URL",
-                p,
-                !setup.token,
-                Action::SmartField(false),
-            );
-            self.button(
-                Rect(521, 162, 447, 44),
-                "Long-lived access token",
-                p,
-                setup.token,
-                Action::SmartField(true),
-            );
-            let url = if setup.token {
-                &setup.fields[0]
-            } else {
-                &entry.text
-            };
-            let url_tail: String = url
-                .chars()
-                .rev()
-                .take(38)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            self.raw_text(58, 225, &url_tail, 16, p.text, 510);
-            let token = if setup.token {
-                &entry.text
-            } else {
-                &setup.fields[1]
-            };
-            self.raw_text(525, 225, &"•".repeat(token.len().min(12)), 16, p.text, 962);
-            self.keyboard(entry.symbols, entry.shift, p);
-            self.repository = Some(entry);
-            self.button(
-                Rect(754, 474, 215, 48),
-                "Find switches",
-                p,
-                true,
-                Action::SmartDiscover,
-            );
-        }
-        if let Some(error) = &setup.error {
-            self.text(56, 463, error, 15, p.text, 967);
-        }
-        let (label, action) = if setup.discovered.is_some() {
-            ("Back", Action::SmartBack)
-        } else {
-            ("Cancel", Action::SmartHome)
-        };
-        self.button(Rect(56, 474, 210, 48), label, p, false, action);
-    }
-
-    pub fn finish_smart_disconnect(&mut self) {
-        self.smart_disconnect = false;
-    }
-
-    pub fn smart_config(&self) -> Option<crate::smart_home::Config> {
-        let setup = self.smart_setup.as_ref()?;
-        let mut fields = setup.fields.clone();
-        fields[usize::from(setup.token)].clone_from(&self.repository.as_ref()?.text);
-        let [url, token] = fields;
-        let switches = setup.discovered.as_ref().map_or_else(Vec::new, |rows| {
-            setup
-                .selected
-                .iter()
-                .filter_map(|&index| rows.get(index).map(|row| row.entity_id.clone()))
-                .collect()
-        });
-        Some(crate::smart_home::Config {
-            url,
-            token,
-            switches,
-        })
-    }
-
-    pub fn smart_setup_result(
-        &mut self,
-        result: Result<Vec<crate::smart_home::Switch>, String>,
-        discovery: bool,
-    ) -> Option<Vec<crate::smart_home::Switch>> {
-        let setup = self.smart_setup.as_mut()?;
-        match result {
-            Ok(rows) if discovery => {
-                setup.error = None;
-                setup.discovered = Some(rows);
-                setup.selected.clear();
-                self.smart_page = 0;
-                None
-            }
-            Ok(rows) => {
-                self.smart_setup = None;
-                self.repository = None;
-                self.smart_page = 0;
-                Some(rows)
-            }
-            Err(error) => {
-                setup.error = Some(error);
-                None
-            }
         }
     }
 
@@ -3736,37 +3710,6 @@ mod dashboard_tests {
     use super::*;
 
     #[test]
-    fn smart_home_touch_setup_keeps_credentials_and_selected_switches_separate() {
-        let mut ui = Ui::new();
-        let tap = |ui: &mut Ui, action| {
-            ui.buttons.clear();
-            ui.buttons.push((Rect(0, 0, 30, 30), action));
-            ui.hit(15, 15);
-        };
-        tap(&mut ui, Action::SmartHome);
-        tap(&mut ui, Action::SmartSetup);
-        for key in "ha.example.net".chars() {
-            tap(&mut ui, Action::Key(key));
-        }
-        tap(&mut ui, Action::SmartField(true));
-        let token = "x".repeat(200);
-        for key in token.chars() {
-            tap(&mut ui, Action::Key(key));
-        }
-        let discovered =
-            serde_json::from_str(r#"[{"entity_id":"switch.plug","state":"on","attributes":{}}]"#)
-                .unwrap();
-        ui.smart_setup_result(Ok(discovered), true);
-        tap(&mut ui, Action::SmartSelect(0));
-        let config = ui.smart_config().unwrap();
-        assert_eq!(config.url, "https://ha.example.net");
-        assert_eq!(config.token, token);
-        assert_eq!(config.switches, ["switch.plug"]);
-        tap(&mut ui, Action::Home);
-        assert!(ui.smart_config().is_none());
-    }
-
-    #[test]
     fn drag_crosses_into_a_partial_page_and_back() {
         let mut ui = Ui::new();
         ui.editing = true;
@@ -3809,8 +3752,6 @@ mod dashboard_tests {
 pub struct View<'a> {
     pub boiler_protocol: Option<bool>,
     pub boiler_module: Option<bool>,
-    pub smart_switches: Option<&'a Result<Vec<crate::smart_home::Switch>, String>>,
-    pub smart_busy: bool,
     pub firmware_version: Option<&'a Result<String, String>>,
     pub vacations: Option<&'a Result<Vec<crate::vacation::Vacation>, String>>,
     pub vacation_busy: bool,
@@ -3894,7 +3835,8 @@ fn temperature(value: Option<&str>) -> String {
 
 fn plugin_value(plugin: &Plugin, view: &View<'_>) -> String {
     match plugin.source {
-        Source::SmartHome => "Switches".into(),
+        Source::Interactive => "Open".into(),
+        Source::LegacySmartHome => "Update in Store".into(),
         Source::BoxTalk => plugin.metric.map_or_else(
             || "Unavailable".into(),
             |metric| crate::telemetry::display(metric, view.telemetry),

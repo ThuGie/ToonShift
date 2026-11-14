@@ -1,15 +1,13 @@
 # ToonShift plugin repositories
 
-## Smart Home Controls
+## Install Tuya and Home Assistant
 
-Link your devices in Home Assistant first. For Smart Life devices, use the [Home Assistant Tuya integration](https://www.home-assistant.io/integrations/tuya/).
+Refresh the official catalog, install **Tuya / Smart Life** or update **Home Assistant**, and tap **Open** in the Store or use the dashboard tile. Both require a launcher that supports interactive WebAssembly plugins.
 
-1. Install or update **Smart Home Controls** from the official Store. Release 1.1 ships its connector as a separate WebAssembly binary. Create a long-lived access token in your Home Assistant user profile. Use a dedicated Home Assistant account with access to the switches you want to control.
-2. On the Toon, open **Settings → Smart home → Connection setup**. You can also open **Smart Home Controls** from its dashboard tile.
-3. Enter the Home Assistant HTTPS URL and long-lived access token. Tap **Find switches** and select the switches you want to allow.
-4. Tap **Save connection**. ToonShift validates your selection and stores the credentials in a private file. Use **Refresh** to check current states. ToonShift reads back the reported state after each command.
+- **Tuya / Smart Life** connects directly to Tuya Cloud. First link the Smart Life account in a Tuya Cloud project with device read and control permissions. On the Toon, enter that project's region, Access ID, Access Secret, and the linked Smart Life UID. Approve the HTTPS destinations and tap **Connect and save**. The region codes are `eu` for Central Europe, `we` for Western Europe, `us` for Western America, `ue` for Eastern America, `cn` for China, and `in` for India. The plugin discovers online devices with boolean `switch` or numbered `switch_N` channels and reads back each command. [Tuya device list contract](https://developer.tuya.com/en/docs/cloud/ad2823ae46?id=Kconjtzq1vk1q)
+- **Home Assistant** takes an HTTPS origin such as `https://ha.example.net:8123` and a long-lived access token. Approve that exact endpoint and tap **Connect and save**. It discovers switches and confirms changes via the REST API. This release uses its own settings. Re-enter the connection if you used Smart Home Controls 1.1. [Home Assistant REST API](https://contributors.home-assistant.io/core/internals/rest-api/)
 
-Open **Connection setup** again to replace the connection. Use **Disconnect** to remove it from the Toon, and revoke the access token in Home Assistant if you no longer use it. The URL must use a certificate trusted by the Toon. For a private certificate authority, provision its public CA certificate at `/mnt/data/toon-rust/home-assistant-ca.pem`. The SSH setup command remains available for scripted provisioning.
+Connection credentials are stored locally with owner-only file permissions. **Remove connection** clears the plugin's saved settings. Revoke the old credential at its provider when retiring a connection. For Home Assistant HTTPS using a private CA, see the per-plugin CA path below.
 
 The Store reads built-in widgets and local JSON files in `/mnt/data/toon-rust/catalog`. To add any number of sources within the catalog limits, sync each public GitHub repository independently. The same source filename is updated atomically, and other repositories keep their files.
 
@@ -58,3 +56,33 @@ Export linear memory as `memory` and a function `render(i32) -> i64`. The argume
 
 The Room summary package contains executable code, with its WAT source in the plugin repository. Weather and existing declarative feeds retain their existing package interface.
 The Store's **Catalog sources** screen lists cached GitHub repositories and their revisions. Removing a source hides its widgets until it is added again. The downloaded packages and dashboard settings stay on the device. Community widget IDs include the lowercased GitHub owner and repository. Existing official IDs retain their original format. A unique matching legacy community widget is migrated with its tile positions and location settings. Ambiguous legacy IDs stay unresolved.
+
+
+## Interactive screens ABI version 1
+
+Publish a package with `"source": "interactive"` and a standalone module under `modules/`. Use the signed package and catalog format above. The module exports `memory`, `input_buffer() -> i32` and `render(i32) -> i64`. The host calls it with a single JSON input and receives one JSON output. Package updates supply new screens and actions through the same ABI.
+
+An input includes `version: 1`, `action` (initially `open`, then the tapped button ID), `language` (`en` or `nl`), `fields` (an object keyed by field ID), `state` (initially saved state or null), and `timestamp_ms` (Unix milliseconds). Each call starts a fresh module instance. Use `state` to carry session data.
+
+A screen output can look like this.
+
+```json
+{
+  "screen": {
+    "message": "Enter a display name.",
+    "fields": [{"id":"name", "label":"Name", "value":"", "secret":false}],
+    "buttons": [{"id":"apply", "label":"Apply"}]
+  },
+  "state": null
+}
+```
+
+ToonShift draws the plugin title, message, input controls, masked secrets, and buttons in its native interface. It provides the keyboard and pagination. Fields can be marked `readonly`. A screen can have up to 12 fields and 48 buttons. IDs may contain ASCII letters, digits, underscores, and hyphens, and must be unique within their list. Use short labels that fit a two-column touchscreen grid. Modules have 512 KiB of linear memory, 4 million fuel per call, up to 32 KiB input and up to 4 KiB output. Compiled binaries must fit within 128 KiB.
+
+Set `save: true` on a successful screen response to atomically replace the persistent state. This is available after a user action. Use `state: null` with `save: true` for disconnect. Each file is scoped to the full catalog ID, including a community publisher namespace. The filename is `extension-<sha256-of-full-id>.json`. A custom public CA certificate for a user-approved origin can be installed at `extension-<sha256-of-full-id>-ca.pem` in the data directory. Private keys belong on the server.
+
+A plugin can declare either `https_hosts` (up to eight exact public DNS names) or `user_https_origin: true`. For the latter, render a field with ID `https_origin` containing an HTTPS origin without a path. Its current value is shown for user approval. Use `"host":"user"` in requests for that origin. For public HTTPS use a declared hostname in `host`. The host checks the user's grants, verifies TLS and pins the resolved IPv4 address. It omits redirects and proxies, excludes loopback and link-local addresses, and only permits private IPv4 for the individually approved origin. A new session asks for approval again.
+
+After a button tap a module can return `{"request":{"host":"api.example.net","path":"/v1/status","headers":{}},"state":{"phase":"refresh"}}`. A JSON object or array encoded as a string in `body` selects POST. Omitting `body` selects GET. The host feeds the JSON result back with the same action, a one-based `step`, and `response: {"data": ...}` or `response: {"error": "..."}`. Finish the chain with a screen. The host allows at most six requests per tap. Opening a screen permits no requests. For a top-level array response, `request.array` can supply `prefix_pointer`, `prefix`, `pointers` (one to eight JSON pointers), `offset`, and `limit`. Each selected row becomes an array of values in pointer order.
+
+Keep provider state and protocol code in the WebAssembly module. The module has no host imports and shares no filesystem, firmware control or shell access. A publisher can keep credentials in its own private state and use them with the destinations the user approved. Install plugins from publishers you trust with the credentials you enter. [Tuya and Home Assistant source examples](https://github.com/ThuGie/ToonShift-plugins/tree/main/source)

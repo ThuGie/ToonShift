@@ -7,7 +7,9 @@ use std::path::Path;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
-    SmartHome,
+    Interactive,
+    #[serde(rename = "smart_home")]
+    LegacySmartHome,
     Clock,
     Boiler,
     NextTarget,
@@ -35,6 +37,10 @@ pub struct Plugin {
     pub title_nl: Option<String>,
     pub description: String,
     pub source: Source,
+    #[serde(default)]
+    pub https_hosts: Vec<String>,
+    #[serde(default)]
+    pub user_https_origin: bool,
     #[serde(default)]
     pub text: String,
     #[serde(default)]
@@ -84,7 +90,7 @@ impl PluginModule {
 
     fn verified(&self, bytes: &[u8]) -> bool {
         use sha2::{Digest, Sha256};
-        bytes.len() <= 96000
+        bytes.len() <= crate::plugin_runtime::MODULE_LIMIT
             && hex_bytes::<32>(&self.sha256)
                 .is_some_and(|hash| Sha256::digest(bytes).as_slice() == hash)
     }
@@ -489,7 +495,10 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
         }
         crate::plugin_runtime::validate(
             &bytes,
-            matches!(package.source, Source::HttpsJson | Source::SmartHome),
+            matches!(
+                package.source,
+                Source::Interactive | Source::HttpsJson | Source::LegacySmartHome
+            ),
         )?;
         let path = module.cache_path(&dir);
         let staged = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -507,7 +516,10 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
     if let Some(code) = &package.wasm {
         crate::plugin_runtime::validate(
             &crate::plugin_runtime::decode(code)?,
-            matches!(package.source, Source::HttpsJson | Source::SmartHome),
+            matches!(
+                package.source,
+                Source::Interactive | Source::HttpsJson | Source::LegacySmartHome
+            ),
         )?;
     }
     let temporary = path.with_extension("tmp");
@@ -541,7 +553,10 @@ pub fn rollback(root: &Path, plugin: &Plugin) -> Result<(), String> {
     if let Some(code) = candidate.wasm {
         crate::plugin_runtime::validate(
             &crate::plugin_runtime::decode(&code)?,
-            matches!(candidate.source, Source::HttpsJson | Source::SmartHome),
+            matches!(
+                candidate.source,
+                Source::Interactive | Source::HttpsJson | Source::LegacySmartHome
+            ),
         )?;
     }
     fs::rename(previous, path).map_err(|error| error.to_string())
@@ -561,7 +576,7 @@ fn read_package(path: &Path, id: &str) -> Option<(Vec<u8>, Plugin)> {
         use std::fmt::Write as _;
         let path = module.cache_path(path.parent()?);
         let metadata = fs::symlink_metadata(&path).ok()?;
-        if !metadata.is_file() || metadata.len() > 96000 {
+        if !metadata.is_file() || metadata.len() > crate::plugin_runtime::MODULE_LIMIT as u64 {
             return None;
         }
         let code = fs::read(path).ok()?;
@@ -592,17 +607,28 @@ fn valid_plugin(plugin: &Plugin) -> bool {
             .is_none_or(|title| !title.trim().is_empty() && title.len() <= 96)
         && plugin.description.len() <= 256
         && plugin.text.len() <= 1024
+        && plugin.https_hosts.len() <= 8
+        && plugin
+            .https_hosts
+            .iter()
+            .all(|host| crate::plugin_screen::valid_host(host))
+        && (plugin.https_hosts.is_empty() || matches!(plugin.source, Source::Interactive))
+        && (!plugin.user_https_origin
+            || (matches!(plugin.source, Source::Interactive) && plugin.https_hosts.is_empty()))
         && plugin.wasm.as_ref().is_none_or(|code| {
             matches!(
                 plugin.source,
-                Source::Wasm | Source::HttpsJson | Source::SmartHome
+                Source::Interactive | Source::Wasm | Source::HttpsJson | Source::LegacySmartHome
             ) && crate::plugin_runtime::decode(code).is_ok()
         })
         && plugin.module.as_ref().is_none_or(|module| {
             plugin.wasm.is_none()
                 && matches!(
                     plugin.source,
-                    Source::Wasm | Source::HttpsJson | Source::SmartHome
+                    Source::Interactive
+                        | Source::Wasm
+                        | Source::HttpsJson
+                        | Source::LegacySmartHome
                 )
                 && module.valid()
         })
@@ -610,7 +636,7 @@ fn valid_plugin(plugin: &Plugin) -> bool {
         && (plugin.artifact.is_some()
             || ((!matches!(plugin.source, Source::BoxTalk) || plugin.metric.is_some())
                 && (!matches!(plugin.source, Source::MeterArchive) || plugin.meter.is_some())
-                && (!matches!(plugin.source, Source::Wasm)
+                && (!matches!(plugin.source, Source::Wasm | Source::Interactive)
                     || plugin.wasm.is_some()
                     || plugin.module.is_some())
                 && (!matches!(plugin.source, Source::HttpsJson)
@@ -708,6 +734,8 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                         plugin.metric = installed.metric;
                         plugin.meter = installed.meter;
                         plugin.wasm = installed.wasm;
+                        plugin.https_hosts = installed.https_hosts;
+                        plugin.user_https_origin = installed.user_https_origin;
                         plugin.text = installed.text;
                         plugin.source = installed.source;
                     }

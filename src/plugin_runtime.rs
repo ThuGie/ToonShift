@@ -1,7 +1,9 @@
 use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
+pub const MODULE_LIMIT: usize = 128 * 1024;
+
 pub fn decode(code: &str) -> Result<Vec<u8>, String> {
-    if code.len() > 192000
+    if code.len() > MODULE_LIMIT * 2
         || !code.len().is_multiple_of(2)
         || !code.bytes().all(|b| b.is_ascii_hexdigit())
     {
