@@ -4,10 +4,11 @@ use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub fn start() -> Receiver<(Metric, Option<f64>)> {
+pub fn start(module: Sender<Option<bool>>) -> Receiver<(Metric, Option<f64>)> {
     let (send, receive) = mpsc::channel();
     std::thread::spawn(move || loop {
-        if connect(&send).is_err() {
+        if connect(&send, &module).is_err() {
+            let _ = module.send(None);
             for metric in [
                 Metric::RoomHumidity,
                 Metric::RoomTemperature,
@@ -24,7 +25,7 @@ pub fn start() -> Receiver<(Metric, Option<f64>)> {
     receive
 }
 
-fn connect(send: &Sender<(Metric, Option<f64>)>) -> io::Result<()> {
+fn connect(send: &Sender<(Metric, Option<f64>)>, module: &Sender<Option<bool>>) -> io::Result<()> {
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")?;
     let host = host.trim();
     if host.is_empty()
@@ -62,6 +63,15 @@ fn connect(send: &Sender<(Metric, Option<f64>)>) -> io::Result<()> {
         let Ok(message) = std::str::from_utf8(&frame[..size - 1]) else {
             continue;
         };
+        if message.contains(&format!("uuid=\"{host}:happ_thermstat\"")) {
+            if let Some(value) = crate::boxtalk::field(message, "boilerModuleConnected") {
+                let _ = module.send(match value {
+                    "0" => Some(false),
+                    "1" => Some(true),
+                    _ => None,
+                });
+            }
+        }
         for (tag, metric, source) in [
             ("currentHumidity", Metric::RoomHumidity, "happ_thermstat"),
             ("currentTemp", Metric::RoomTemperature, "happ_thermstat"),

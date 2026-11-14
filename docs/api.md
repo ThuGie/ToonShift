@@ -61,6 +61,8 @@ The create command prints the bearer credential once. The list command prints on
 
 ## Firmware inventory
 
+Firmware 6.4.5 writes a literal zero to the HTTP `getThermostatInfo` `connection` field. The API retains the raw field for compatibility. Use `GetBoilerType` to identify the control protocol. Its `ot` argument is 0 for OpenTherm and 1 for on/off, for both reads and writes. The BoxTalk `thermostatInfo` dataset can publish `boilerModuleConnected` separately. OpenTherm also exposes `otCommError` and burner feedback. An on/off relay sends heat demand without confirming combustion. If module status is unavailable, ToonShift reports the link as unknown.
+
 The following inventory was gathered over SSH on a Toon 2 running firmware 6.4.5. The local HTTP convention is `http://127.0.0.1:10080/<service>?action=<action>`. The firmware listens on ports 80 and 10080. Behavior, permissions, and route availability vary by image and rooting setup. Some actions use legacy JavaScript-like text instead of strict JSON. Probe with read operations over SSH.
 
 ### Thermostat, schedules, and history

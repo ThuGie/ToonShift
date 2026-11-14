@@ -233,11 +233,9 @@ pub fn boiler() -> Result<Boiler, String> {
     let status = thermostat::status()?;
     let replies =
         boxtalk::thermostat(&["GetBoilerType", "GetDhwSettings"]).map_err(|err| err.to_string())?;
-    let open_therm = match boxtalk::field(&replies[0], "ot") {
-        Some("0") => false,
-        Some("1") => true,
-        _ => return Err("Boiler mode unavailable".into()),
-    };
+    let open_therm = boxtalk::field(&replies[0], "ot")
+        .and_then(thermostat::open_therm_mode)
+        .ok_or("Boiler mode unavailable")?;
     let hot_water = (|| {
         let read = |name| boxtalk::field(&replies[1], name)?.parse::<i32>().ok();
         let min = read("dhwMinSetpoint")?;
@@ -253,7 +251,9 @@ pub fn boiler() -> Result<Boiler, String> {
     })();
     Ok(Boiler {
         open_therm,
-        connected: status.connection != "0",
+        connected: open_therm
+            && status.ot_comm_error == "0"
+            && matches!(status.burner_info.as_str(), "0" | "1" | "2" | "3"),
         hot_water,
     })
 }
@@ -262,7 +262,7 @@ pub fn configure(change: BoilerChange) -> Result<Boiler, String> {
     let before = boiler()?;
     let (verb, args) = match change {
         BoilerChange::Protocol(mode) if mode == before.open_therm => return Ok(before),
-        BoilerChange::Protocol(mode) => ("SetBoilerType", format!("<ot>{}</ot>", u8::from(mode))),
+        BoilerChange::Protocol(mode) => ("SetBoilerType", format!("<ot>{}</ot>", u8::from(!mode))),
         BoilerChange::HotWater(request) => {
             let limits = before
                 .hot_water

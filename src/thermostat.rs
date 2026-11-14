@@ -26,6 +26,44 @@ pub struct Status {
     pub error_found: String,
 }
 
+pub fn open_therm_mode(value: &str) -> Option<bool> {
+    match value {
+        "0" => Some(true),
+        "1" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn boiler_protocol() -> Result<bool, String> {
+    let replies = crate::boxtalk::thermostat(&["GetBoilerType"]).map_err(|e| e.to_string())?;
+    crate::boxtalk::field(&replies[0], "ot")
+        .and_then(open_therm_mode)
+        .ok_or_else(|| "Boiler mode unavailable".into())
+}
+
+pub fn boiler_link_label(
+    open_therm: Option<bool>,
+    module: Option<bool>,
+    status: Option<&Status>,
+) -> &'static str {
+    if module == Some(false) {
+        return "Boiler module offline";
+    }
+    match (open_therm, module, status.map(|s| s.ot_comm_error.as_str())) {
+        (Some(false), Some(true), _) => "On/off relay · module connected",
+        (Some(false), _, _) => "On/off relay · link unknown",
+        (Some(true), _, Some("1")) => "OpenTherm communication error",
+        (Some(true), _, Some("0"))
+            if status.is_some_and(|s| matches!(s.burner_info.as_str(), "0" | "1" | "2" | "3")) =>
+        {
+            "OpenTherm connected"
+        }
+        (Some(true), _, _) => "OpenTherm · link unknown",
+        (_, Some(true), _) => "Boiler module connected",
+        _ => "Boiler link unknown",
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct History {
     pub room: Vec<Option<f64>>,
@@ -61,7 +99,7 @@ pub fn diagnostics() -> Result<Diagnostics, String> {
             .and_then(|v| v.parse().ok())
             .filter(|v: &f64| v.is_finite()),
         measured_centi_celsius: field(&replies[0], "measuredTemp").and_then(|v| v.parse().ok()),
-        open_therm_configured: flag(field(&replies[1], "ot")),
+        open_therm_configured: field(&replies[1], "ot").and_then(open_therm_mode),
         hot_water_enabled: flag(field(&replies[2], "dhwEnabled")),
         hot_water_target_celsius: field(&replies[2], "dhwSetpoint").and_then(|v| v.parse().ok()),
     })
@@ -99,11 +137,6 @@ pub fn export_diagnostics(root: &std::path::Path) -> std::io::Result<()> {
         "open_therm_configured": diagnostics.as_ref().and_then(|d| d.open_therm_configured),
         "hot_water_enabled": diagnostics.as_ref().and_then(|d| d.hot_water_enabled),
         "thermostat_responded": status.is_some(),
-        "boiler_connected": status.as_ref().and_then(|s| match s.connection.as_str() {
-            "0" => Some(false),
-            "1" => Some(true),
-            _ => None,
-        }),
         "open_therm_communication_error": status.as_ref().and_then(|s| match s.ot_comm_error.as_str() {
             "0" => Some(false),
             "1" => Some(true),
@@ -191,6 +224,25 @@ fn parse_history(response: &str) -> Result<History, String> {
 #[cfg(test)]
 mod history_tests {
     use super::*;
+
+    #[test]
+    fn boiler_mode_and_link_use_firmware_semantics() {
+        let status: Status = serde_json::from_str(r#"{"currentTemp":"2000","currentSetpoint":"2100","programState":"0","burnerInfo":"0","connection":"0","nextSetpoint":"0","nextTime":"0","otCommError":"0"}"#).unwrap();
+        assert_eq!(open_therm_mode("0"), Some(true));
+        assert_eq!(open_therm_mode("1"), Some(false));
+        assert_eq!(
+            boiler_link_label(Some(true), None, Some(&status)),
+            "OpenTherm connected"
+        );
+        assert_eq!(
+            boiler_link_label(Some(false), None, Some(&status)),
+            "On/off relay · link unknown"
+        );
+        assert_eq!(
+            boiler_link_label(Some(false), Some(false), Some(&status)),
+            "Boiler module offline"
+        );
+    }
 
     #[test]
     fn history_keeps_missing_sample_positions() {

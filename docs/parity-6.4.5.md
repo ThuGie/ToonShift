@@ -8,7 +8,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 | --- | --- | --- |
 | airQuality | Thermostat humidity and `hdrv_sensory` | Compensated humidity read verified. CO₂, VOC, thresholds, and sensor fault behavior remain. |
 | benchmark | Local display and touch | Compare stock and ToonShift touch latency, cold start, and idle CPU. |
-| boilerMonitor | Thermostat, BoilerInfo, boiler adapter | Advanced setup exposes OpenTherm and on/off relay with confirmation and read-back. Reference unit still reports an offline link. Live boiler operation remains unverified. |
+| boilerMonitor | Thermostat, BoilerInfo, boiler adapter | Advanced setup exposes OpenTherm and on/off relay with confirmation and read-back. The reference unit reports a connected boiler module and an OpenTherm communication error. Live boiler operation remains unverified. |
 | clock | RTC and firmware time service | Home clock and idle clock implemented. Timezone, time sync, and manual clock settings remain. |
 | controlPanel | Tenant registration | Map visible stock controls and their firmware contracts. |
 | customerService | Tenant and legacy services | Settings exports an allowlisted support report. Verify export on-device and map remaining stock support actions. |
@@ -41,7 +41,7 @@ To reproduce the metadata inventory from a trusted SSH client, run `ssh toon 'sh
 - Port 8000 belongs to OpenVPN. Its configuration binds the management interface to `127.0.0.1:8000`.
 - The BoxTalk thermostat action namespace is `urn:hcb-hae-com:serviceId:Thermostat`. `GetTempOffset` returns `offset` in °C and `measuredTemp` in hundredths of °C. `GetBoilerType` returns `ot`. `GetDhwSettings` returns the enabled flag, target, and limits. `GetHolidays` returned an empty list. The `SetHoliday` handler takes `entryId`, `startTimeT`, `endTimeT`, and `setpoint`. Vacation writes need verification before exposing them.
 - `hcb_config` exposes the saved wireless interface under `iface-wlan0`. Its payload can contain credentials. Keep the payload out of logs and public fixtures.
-- A configured boiler type does not prove that an appliance is connected. The reference unit reported its boiler offline.
+- Firmware 6.4.5 hardcodes HTTP `connection=0`. A live BoxTalk probe returned `boilerModuleConnected=1`, `ot=0` (OpenTherm), `otCommError=1`, and `burnerInfo=-1`. The adapter and appliance feedback are distinct.
 - In the last live heating trace, the firmware received a 24.5°C setpoint against a 22.6°C room reading. It requested a 90°C internal boiler target and 100% modulation while reporting `connection=0` and `otCommError=1`. The thermostat daemon owned the native UART. The physical link and both protocol modes still need an on-device test. FreeToon's optional serial proxy forwards the wired adapter traffic and adds telemetry. Its active wireless route requires a separately configured OTGW.
 - Advanced setup detected one registered Z-Wave meter and one configured meter source. Touchscreen inclusion started and the controller returned cancellation and stop acknowledgements. No physical device was added or removed during that test.
 

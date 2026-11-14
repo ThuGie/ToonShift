@@ -1844,22 +1844,26 @@ impl Ui {
         self.panel(Rect(32, 100, 532, 448), p.card, 26);
         self.text(62, 145, "Room temperature", 23, p.muted, 535);
         if let Some(status) = view.status {
-            let (label, attention) = match (status.connection.as_str(), status.burner_info.as_str())
-            {
-                ("0", _) if status.heat_requested() => {
-                    ("Heat requested · boiler link offline", true)
+            let (label, attention) = match (
+                view.boiler_protocol,
+                view.boiler_module,
+                status.burner_info.as_str(),
+            ) {
+                (_, Some(false), _) => ("Boiler module offline", true),
+                (Some(false), _, _) if status.heat_requested() => {
+                    ("On/off relay · heat requested", true)
                 }
-                ("0", _) => ("Boiler offline", true),
-                (_, _) if status.heating_error() == Some(true) || status.ot_comm_error == "1" => {
-                    ("Heating fault", true)
+                (Some(false), _, _) => ("On/off relay · heating idle", false),
+                (Some(true), _, _) if status.ot_comm_error == "1" => {
+                    ("OpenTherm communication error", true)
                 }
-                ("1", "1") => ("Boiler firing for heat", true),
-                ("1", "2") => ("Heating hot water", true),
-                ("1", "3") => ("Preheating", true),
-                ("1", "0") if status.heat_requested() => {
+                (_, _, "1") => ("Boiler firing for heat", true),
+                (_, _, "2") => ("Heating hot water", true),
+                (_, _, "3") => ("Preheating", true),
+                (_, _, _) if status.heat_requested() => {
                     ("Heat requested · burner not confirmed", true)
                 }
-                ("1", "0") => ("Heating idle", false),
+                (_, _, "0") => ("Heating idle", false),
                 _ => ("Boiler link unknown", false),
             };
             self.text(
@@ -2732,27 +2736,21 @@ impl Ui {
             Action::HeatingDetails,
         );
         if let Some(status) = view.status {
-            let boiler = match status.connection.as_str() {
-                "0" => "Boiler offline",
-                "1" => "Boiler connected",
-                _ => "Boiler link unknown",
-            };
-            self.text(56, 197, boiler, 23, p.text, 475);
-            if status.connection == "1" {
+            let boiler = crate::thermostat::boiler_link_label(
+                view.boiler_protocol,
+                view.boiler_module,
+                Some(status),
+            );
+            self.text(56, 197, boiler, 21, p.text, 486);
+            if view.boiler_protocol == Some(true) && status.ot_comm_error == "0" {
                 let detail = format!(
                     "{}°C · {}%",
                     status.current_internal_boiler_setpoint, status.current_modulation_level
                 );
-                self.text(340, 197, &detail, 23, p.muted, 620);
+                self.text(490, 197, &detail, 21, p.muted, 620);
             }
-            let fault = match (status.heating_error(), status.ot_comm_error.as_str()) {
-                (Some(true), "1") => Some("Heating fault · OpenTherm error"),
-                (_, "1") => Some("OpenTherm error"),
-                (Some(true), _) => Some("Heating fault"),
-                _ => None,
-            };
-            if let Some(fault) = fault {
-                self.text(625, 197, fault, 19, p.accent, 965);
+            if view.boiler_protocol == Some(true) && status.heating_error() == Some(true) {
+                self.text(625, 197, "Heating fault", 19, p.accent, 965);
             }
         }
         self.text(56, 235, "Room sensor", 19, p.muted, 300);
@@ -3509,6 +3507,8 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub boiler_protocol: Option<bool>,
+    pub boiler_module: Option<bool>,
     pub smart_switches: Option<&'a Result<Vec<crate::smart_home::Switch>, String>>,
     pub smart_busy: bool,
     pub firmware_version: Option<&'a Result<String, String>>,
@@ -3605,11 +3605,19 @@ fn plugin_value(plugin: &Plugin, view: &View<'_>) -> String {
             .map_or_else(|| "Loading…".into(), |reading| reading.value.clone()),
         Source::Clock => view.time.into(),
         Source::Boiler => match view.status {
-            Some(s) if s.connection == "0" => "Offline",
+            _ if view.boiler_module == Some(false) => "Offline",
+            Some(s) if view.boiler_protocol == Some(false) && s.heat_requested() => {
+                "Heat requested"
+            }
+            _ if view.boiler_protocol == Some(false) => "On/off relay",
+            Some(s) if view.boiler_protocol == Some(true) && s.ot_comm_error == "1" => {
+                "OpenTherm error"
+            }
             Some(s) if s.burner_info == "1" => "Heating",
             Some(s) if s.burner_info == "2" => "Hot water",
             Some(s) if s.burner_info == "3" => "Preheating",
-            Some(_) => "Idle",
+            Some(s) if s.burner_info == "0" => "Idle",
+            Some(_) => "Boiler link unknown",
             None => "Unavailable",
         }
         .into(),

@@ -298,7 +298,7 @@ impl Ui {
             self.hardware_button(Rect(780, 117, 187, 49), "Refresh", p, false, A::Refresh);
         }
         match self.hardware.tab {
-            Tab::Boiler => self.boiler_setup(state, p),
+            Tab::Boiler => self.boiler_setup(state, view, p),
             Tab::Meters | Tab::Devices => self.device_setup(state, view.settings, p),
         }
         if view.error.is_none() {
@@ -312,7 +312,7 @@ impl Ui {
         }
     }
 
-    fn boiler_setup(&mut self, state: &State, p: &Palette) {
+    fn boiler_setup(&mut self, state: &State, view: &View<'_>, p: &Palette) {
         use HardwareAction as A;
         let boiler = match &state.boiler {
             Some(Ok(boiler)) => boiler,
@@ -328,11 +328,11 @@ impl Ui {
         self.text(
             56,
             216,
-            if boiler.connected {
-                "Boiler connected"
-            } else {
-                "Boiler link offline"
-            },
+            crate::thermostat::boiler_link_label(
+                Some(boiler.open_therm),
+                view.boiler_module,
+                view.status,
+            ),
             24,
             p.text,
             960,

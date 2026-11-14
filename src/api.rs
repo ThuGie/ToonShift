@@ -548,7 +548,7 @@ fn handle(
             Ok(("200 OK", json!({
                 "boiler": boiler.map(|boiler| json!({
                     "open_therm": boiler.open_therm,
-                    "connected": boiler.connected,
+                    "connected": boiler.open_therm.then_some(boiler.connected),
                     "hot_water": boiler.hot_water.map(|water| json!({
                         "enabled": water.enabled,
                         "target": water.target,

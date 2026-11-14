@@ -119,6 +119,8 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         settings: &settings,
         plugins: &plugins,
         status: Some(&status),
+        boiler_protocol: Some(true),
+        boiler_module: Some(true),
         pending: false,
         error: None,
         time: if night { "22:18" } else { "12:18" },
@@ -233,11 +235,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 "on/off relay"
             },
-            if boiler.connected {
-                "connected"
-            } else {
-                "offline"
-            },
+            thermostat::boiler_link_label(
+                Some(boiler.open_therm),
+                None,
+                thermostat::status().ok().as_ref()
+            ),
             boiler.hot_water.is_some()
         );
         println!(
@@ -251,7 +253,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if std::env::args().nth(1).as_deref() == Some("--probe-telemetry") {
-        let events = telemetry::start();
+        let (module_sender, _module_receiver) = std::sync::mpsc::channel();
+        let events = telemetry::start(module_sender);
         let until = std::time::Instant::now() + Duration::from_secs(15);
         let (mut humidity, mut room) = (false, false);
         while let Ok((metric, value)) =
@@ -332,7 +335,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .ok();
     let mut readings = std::collections::HashMap::new();
-    let events = telemetry::start();
+    let (module_sender, module_receiver) = std::sync::mpsc::channel();
+    let events = telemetry::start(module_sender);
+    let mut boiler_module = None;
+    let (protocol_sender, protocol_receiver) = std::sync::mpsc::channel();
+    let mut boiler_protocol = None;
+    let mut protocol_due = std::time::Instant::now();
     let mut telemetry = telemetry::Readings::new();
     let (meter_sender, meter_receiver) =
         std::sync::mpsc::channel::<(advanced::MeterSources, Result<advanced::MeterFlows, String>)>(
@@ -513,6 +521,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 dirty = true;
             }
         }
+        for module in module_receiver.try_iter() {
+            dirty |= boiler_module != module;
+            boiler_module = module;
+        }
+        for mode in protocol_receiver.try_iter() {
+            dirty |= boiler_protocol != mode;
+            boiler_protocol = mode;
+        }
+        if std::time::Instant::now() >= protocol_due {
+            protocol_due = std::time::Instant::now() + Duration::from_secs(15);
+            let sender = protocol_sender.clone();
+            std::thread::spawn(move || {
+                let _ = sender.send(thermostat::boiler_protocol().ok());
+            });
+        }
         if feed_poll.elapsed() >= Duration::from_millis(250) {
             feed_poll = std::time::Instant::now();
             if let Some(feeds) = &mut feeds {
@@ -611,6 +634,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 settings: &settings,
                 plugins: &catalog,
                 status: status.as_ref(),
+                boiler_protocol,
+                boiler_module,
                 pending,
                 error: error.as_deref(),
                 time,
