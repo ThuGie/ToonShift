@@ -257,7 +257,12 @@ pub fn run_installed(
             )
         } else {
             let url = request.public_url(hosts)?;
-            crate::download::public_request(None, &url, &request.headers, body)
+            crate::download::public_request(
+                Some(&root.join("https-roots.pem")),
+                &url,
+                &request.headers,
+                body,
+            )
         }
     })?;
     if save {

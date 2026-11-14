@@ -9,6 +9,11 @@ pub fn trust(root: &Path) -> io::Result<PathBuf> {
     let path = root.join("https-roots.pem");
     let temporary = root.join(format!("https-roots.{}.tmp", std::process::id()));
     let mut file = std::fs::File::create(&temporary)?;
+    #[cfg(target_os = "linux")]
+    if let Ok(mut system_roots) = std::fs::File::open("/etc/ssl/certs/ca-certificates.crt") {
+        io::copy(&mut system_roots, &mut file)?;
+        file.write_all(b"\n")?;
+    }
     file.write_all(include_bytes!("../assets/isrg-root-x1.pem"))?;
     file.write_all(b"\n")?;
     file.write_all(include_bytes!("../assets/isrg-root-x2.pem"))?;
