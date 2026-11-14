@@ -74,6 +74,31 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         (plugins::Metric::Gas, (0.0, std::time::Instant::now())),
     ]
     .into();
+    let energy = Ok(energy::Chart {
+        bars: vec![
+            Some(0.3),
+            Some(0.32),
+            Some(0.29),
+            None,
+            Some(0.42),
+            Some(0.65),
+            Some(1.1),
+            Some(0.83),
+            Some(0.53),
+            Some(0.48),
+            Some(0.55),
+            Some(0.31),
+        ],
+        partial_bars: vec![
+            false, false, false, true, false, false, true, false, false, false, false, false,
+        ],
+        unit: "kWh",
+        total: Some(5.78),
+        partial: true,
+        from: 0,
+        to: 86400,
+        tariff_usage: [None; 2],
+    });
     let status = thermostat::Status {
         current_temp: "2140".into(),
         current_setpoint: "2200".into(),
@@ -110,7 +135,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         catalog_sources: &[],
         readings: &Default::default(),
         telemetry: &telemetry,
-        energy: None,
+        energy: Some(&energy),
         diagnostics_message: None,
         firmware_version: None,
         history: None,
@@ -125,6 +150,11 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         }
         Some("settings") => {
             ui.hit(750, 40);
+        }
+        Some("energy") => {
+            ui.hit(560, 40);
+            ui.draw(&view);
+            ui.hit(590, 403);
         }
         _ => {}
     }

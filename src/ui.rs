@@ -39,6 +39,7 @@ enum Page {
 
 #[derive(Clone, Copy)]
 pub enum Action {
+    StoreFilter(bool),
     MeterSource(crate::plugins::Metric, usize),
     AutomaticMeter(crate::plugins::Metric),
     Hardware(HardwareAction),
@@ -93,6 +94,7 @@ pub enum Action {
     SavePreset(crate::presets::Preset),
     Language(crate::language::Language),
     Energy(crate::energy::Meter, crate::energy::Period),
+    EnergyBucket(usize),
     EnergyRates,
     EditEnergyRate(crate::energy::Rate, Option<u32>),
     SaveEnergyRate(crate::energy::Rate),
@@ -174,6 +176,7 @@ pub struct Ui {
     buttons: Vec<(Rect, Action)>,
     page: Page,
     offset: usize,
+    store_installed_only: bool,
     day: usize,
     schedule_page: usize,
     editing_slot: Option<(Option<crate::schedule::Slot>, crate::schedule::Slot)>,
@@ -192,6 +195,7 @@ pub struct Ui {
     vacation_offset: usize,
     vacation_remove: Option<usize>,
     energy: (crate::energy::Meter, crate::energy::Period),
+    energy_bucket: Option<usize>,
     energy_rate: Option<crate::energy::Rate>,
     energy_rate_error: Option<&'static str>,
     language: crate::language::Language,
@@ -219,6 +223,7 @@ impl Ui {
             buttons: Vec::new(),
             page: Page::Home,
             offset: 0,
+            store_installed_only: false,
             day: 0,
             schedule_page: 0,
             editing_slot: None,
@@ -240,6 +245,7 @@ impl Ui {
                 crate::energy::Meter::Electricity,
                 crate::energy::Period::Day,
             ),
+            energy_bucket: None,
             energy_rate: None,
             energy_rate_error: None,
             language: Default::default(),
@@ -459,6 +465,10 @@ impl Ui {
             self.repository = None;
         }
         match action {
+            Action::StoreFilter(installed_only) => {
+                self.store_installed_only = installed_only;
+                self.offset = 0;
+            }
             Action::ConfirmResetPreferences => self.reset_preferences = true,
             Action::CancelResetPreferences => self.reset_preferences = false,
             Action::Vacations => {
@@ -536,6 +546,7 @@ impl Ui {
                 return Some(action);
             }
             Action::Energy(meter, period) => {
+                self.energy_bucket = None;
                 self.page = Page::Energy;
                 self.energy = (meter, period);
                 self.wifi = None;
@@ -543,6 +554,9 @@ impl Ui {
                 self.editing = false;
                 self.selected_tile = None;
                 return Some(action);
+            }
+            Action::EnergyBucket(index) => {
+                self.energy_bucket = (self.energy_bucket != Some(index)).then_some(index);
             }
             Action::RepositoryEntry => self.repository = Some(TextEntry::default()),
             Action::CloseRepository => self.repository = None,
@@ -1828,7 +1842,8 @@ impl Ui {
                     ("Heating fault", true)
                 }
                 ("1", "1") => ("Boiler firing for heat", true),
-                ("1", "2" | "3") => ("Heating hot water", true),
+                ("1", "2") => ("Heating hot water", true),
+                ("1", "3") => ("Preheating", true),
                 ("1", "0") if status.heat_requested() => {
                     ("Heat requested · burner not confirmed", true)
                 }
@@ -2486,6 +2501,12 @@ impl Ui {
         for (index, value) in chart.bars.iter().enumerate() {
             let x = left + index * width / chart.bars.len();
             let next = left + (index + 1) * width / chart.bars.len();
+            let area = Rect(x, top, next - x, bottom - top + 1);
+            if self.energy_bucket == Some(index) {
+                self.panel(area, p.raised, 0);
+                self.panel(Rect(x, zero, next - x, 1), p.muted, 0);
+            }
+            self.buttons.push((area, Action::EnergyBucket(index)));
             if let Some(value) = value {
                 let y = if *value == 0.0 { zero } else { plot_y(*value) };
                 self.panel(
@@ -2544,7 +2565,11 @@ impl Ui {
         self.text(
             162,
             521,
-            self.language.translate("Earlier"),
+            if self.energy_bucket.is_none() {
+                "Earlier"
+            } else {
+                ""
+            },
             17,
             p.muted,
             480,
@@ -2557,7 +2582,36 @@ impl Ui {
             p.muted,
             960,
         );
-        if chart.partial {
+        if let Some(index) = self.energy_bucket.filter(|&index| index < chart.bars.len()) {
+            let value = chart.bars[index].map_or_else(
+                || self.language.translate("No reading").into(),
+                |value| format!("{value:.2} {}", chart.unit),
+            );
+            let quality = if chart.partial_bars[index] {
+                self.language.translate("Incomplete readings")
+            } else {
+                ""
+            };
+            let (from, to) = chart.bucket_bounds(index);
+            let stamp = |seconds: u64| {
+                #[cfg(target_os = "linux")]
+                if let Some([_, month, day, hour, minute]) = i32::try_from(seconds)
+                    .ok()
+                    .and_then(crate::device::vacation_date)
+                {
+                    return format!("{day:02}/{month:02} {hour:02}:{minute:02}");
+                }
+                format!("{:02}:{:02}", seconds / 3600 % 24, seconds / 60 % 60)
+            };
+            self.raw_text(
+                162,
+                521,
+                &format!("{} – {}   ·   {value}   {quality}", stamp(from), stamp(to)),
+                17,
+                p.text,
+                852,
+            );
+        } else if chart.partial {
             self.text(
                 460,
                 521,
@@ -2834,8 +2888,33 @@ impl Ui {
             self.store_sources(view, p);
             return;
         }
-        self.text(32, 130, "Dashboard widgets", 32, p.text, 992);
-        for (row, plugin) in view.plugins.iter().skip(self.offset).take(4).enumerate() {
+        self.text(32, 130, "Dashboard widgets", 30, p.text, 515);
+        self.button(
+            Rect(690, 94, 129, 45),
+            "All widgets",
+            p,
+            !self.store_installed_only,
+            Action::StoreFilter(false),
+        );
+        self.button(
+            Rect(829, 94, 163, 45),
+            "On dashboard",
+            p,
+            self.store_installed_only,
+            Action::StoreFilter(true),
+        );
+        let installed_only = self.store_installed_only;
+        let visible = || {
+            view.plugins.iter().enumerate().filter(|(_, plugin)| {
+                !installed_only || view.settings.installed.contains(&plugin.id)
+            })
+        };
+        let count = visible().count();
+        self.offset = self.offset.min(count.saturating_sub(1) / 4 * 4);
+        if count == 0 {
+            self.text(54, 220, "No widgets on the dashboard", 22, p.muted, 970);
+        }
+        for (row, (index, plugin)) in visible().skip(self.offset).take(4).enumerate() {
             let y = 150 + row * 88;
             self.panel(Rect(32, y, 960, 80), p.card, 16);
             self.raw_text(54, y + 25, plugin.title(self.language), 22, p.text, 595);
@@ -2854,7 +2933,6 @@ impl Ui {
                     590,
                 );
             }
-            let index = self.offset + row;
             let installed = view.settings.installed.contains(&plugin.id);
             if installed
                 && plugin.artifact.is_some()
@@ -2893,7 +2971,7 @@ impl Ui {
                 Action::Previous,
             );
         }
-        if self.offset + 4 < view.plugins.len() {
+        if self.offset + 4 < count {
             self.button(Rect(847, 509, 145, 49), "Next", p, false, Action::Next);
         }
         self.button(

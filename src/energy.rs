@@ -85,7 +85,7 @@ pub struct Chart {
     pub from: u64,
     pub to: u64,
     #[serde(skip)]
-    tariff_usage: [Option<f64>; 2],
+    pub(crate) tariff_usage: [Option<f64>; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -156,21 +156,24 @@ impl Rate {
 }
 
 impl Chart {
+    pub fn bucket_bounds(&self, index: usize) -> (u64, u64) {
+        let count = self.bars.len() as u64;
+        let window = self.to - self.from;
+        let boundary = |i: usize| self.from + (window * i as u64).div_ceil(count);
+        (boundary(index), boundary(index + 1))
+    }
+
     pub fn csv(&self) -> String {
         use std::fmt::Write as _;
         let mut csv =
             String::from("from_unix,to_unix,value,unit,window_partial,bucket_partial\r\n");
-        let count = self.bars.len() as u64;
-        let window = self.to - self.from;
         for (index, value) in self.bars.iter().enumerate() {
-            let index = index as u64;
-            let from = self.from + (window * index).div_ceil(count);
-            let to = self.from + (window * (index + 1)).div_ceil(count);
+            let (from, to) = self.bucket_bounds(index);
             let value = value.map_or_else(String::new, |value| value.to_string());
             writeln!(
                 csv,
                 "{from},{to},{value},{},{},{}\r",
-                self.unit, self.partial, self.partial_bars[index as usize]
+                self.unit, self.partial, self.partial_bars[index]
             )
             .expect("writing to a String");
         }
