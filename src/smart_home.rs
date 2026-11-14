@@ -8,6 +8,76 @@ pub struct Config {
     pub switches: Vec<String>,
 }
 
+#[cfg(any(target_os = "linux", test))]
+struct Connector(Vec<u8>);
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Deserialize)]
+struct Request {
+    path: String,
+    body: Option<serde_json::Value>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl Connector {
+    #[cfg(target_os = "linux")]
+    fn load(root: &Path) -> Result<Self, String> {
+        let plugin = crate::plugins::catalog(root)
+            .into_iter()
+            .find(|plugin| {
+                plugin.id == "toonshift-smart-home"
+                    && plugin.publisher.as_deref().is_some_and(|publisher| {
+                        publisher.eq_ignore_ascii_case(crate::plugins::OFFICIAL)
+                    })
+                    && matches!(plugin.source, crate::plugins::Source::SmartHome)
+            })
+            .and_then(|plugin| plugin.wasm)
+            .ok_or("Install or update Smart Home Controls from the official Store first.")?;
+        crate::plugin_runtime::decode(&plugin).map(Self)
+    }
+
+    fn plan(&self, operation: &str, id: Option<&str>, on: Option<bool>) -> Result<Request, String> {
+        let input = serde_json::json!({"operation":operation,"id":id,"on":on}).to_string();
+        let output = crate::plugin_runtime::render_feed(&self.0, input.as_bytes())?;
+        let request: Request =
+            serde_json::from_str(&output).map_err(|_| "Invalid connector request")?;
+        if !request.path.starts_with("/api/")
+            || request.path.len() > 256
+            || !request
+                .path
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/_.".contains(&byte))
+            || request
+                .path
+                .split('/')
+                .any(|part| part == "." || part == "..")
+            || (operation != "set" && request.body.is_some())
+        {
+            return Err("Connector request exceeds its HTTPS permissions.".into());
+        }
+        if operation == "set" {
+            let target = if on == Some(true) {
+                "turn_on"
+            } else {
+                "turn_off"
+            };
+            let allowed = request.path.strip_prefix("/api/services/switch/") == Some(target)
+                && request
+                    .body
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|body| {
+                        body.len() == 1
+                            && body.get("entity_id").and_then(serde_json::Value::as_str) == id
+                    });
+            if !allowed {
+                return Err("The connector may only change the selected switch.".into());
+            }
+        }
+        Ok(request)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Switch {
     pub entity_id: String,
@@ -145,7 +215,13 @@ impl Config {
 
     #[cfg(target_os = "linux")]
     pub fn list(&self, root: &Path) -> Result<Vec<Switch>, String> {
-        let rows: Vec<Switch> = self.request(root, "/api/states", None)?;
+        self.list_with(root, &Connector::load(root)?)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn list_with(&self, root: &Path, connector: &Connector) -> Result<Vec<Switch>, String> {
+        let request = connector.plan("list", None, None)?;
+        let rows: Vec<Switch> = self.request(root, &request.path, None)?;
         Ok(rows
             .into_iter()
             .filter(|row| valid_switch(&row.entity_id))
@@ -153,18 +229,20 @@ impl Config {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn set(&self, root: &Path, id: &str, on: bool) -> Result<(), String> {
+    fn set(&self, root: &Path, connector: &Connector, id: &str, on: bool) -> Result<(), String> {
         if !self.switches.iter().any(|allowed| allowed == id) {
             return Err("This switch is not enabled in ToonShift.".into());
         }
         let target = if on { "on" } else { "off" };
+        let command = connector.plan("set", Some(id), Some(on))?;
+        let readback = connector.plan("read", Some(id), None)?;
         let _: serde_json::Value = self.request(
             root,
-            &format!("/api/services/switch/turn_{target}"),
-            Some(serde_json::json!({"entity_id": id}).to_string()),
+            &command.path,
+            command.body.map(|body| body.to_string()),
         )?;
         for _ in 0..3 {
-            let state: Switch = self.request(root, &format!("/api/states/{id}"), None)?;
+            let state: Switch = self.request(root, &readback.path, None)?;
             if state.entity_id == id && state.state == target {
                 return Ok(());
             }
@@ -261,10 +339,11 @@ pub fn disconnect(root: &Path) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn selected(root: &Path, change: Option<(String, bool)>) -> Result<Vec<Switch>, String> {
     let config = load(root)?;
+    let connector = Connector::load(root)?;
     if let Some((id, on)) = change {
-        config.set(root, &id, on)?;
+        config.set(root, &connector, &id, on)?;
     }
-    let mut rows = config.list(root)?;
+    let mut rows = config.list_with(root, &connector)?;
     rows.retain(|row| config.switches.contains(&row.entity_id));
     rows.sort_by(|a, b| a.entity_id.cmp(&b.entity_id));
     Ok(rows)
@@ -273,6 +352,34 @@ pub fn selected(root: &Path, change: Option<(String, bool)>) -> Result<Vec<Switc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the separate ToonShift-plugins checkout"]
+    fn installed_connector_plans_discovery_control_and_readback() {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("ToonShift-plugins");
+        let package = serde_json::from_slice(
+            &std::fs::read(checkout.join("plugins/toonshift-smart-home.json")).unwrap(),
+        )
+        .unwrap();
+        let connector = Connector(crate::plugins::checkout_module(&checkout, &package));
+        assert_eq!(
+            connector.plan("list", None, None).unwrap().path,
+            "/api/states"
+        );
+        let id = Some("switch.desk");
+        assert_eq!(
+            connector.plan("read", id, None).unwrap().path,
+            "/api/states/switch.desk"
+        );
+        for (on, action) in [(true, "turn_on"), (false, "turn_off")] {
+            let request = connector.plan("set", id, Some(on)).unwrap();
+            assert_eq!(request.path, format!("/api/services/switch/{action}"));
+            assert_eq!(
+                request.body.unwrap(),
+                serde_json::json!({"entity_id":"switch.desk"})
+            );
+        }
+    }
 
     #[test]
     fn setup_requires_https_and_limits_control_to_unique_switches() {

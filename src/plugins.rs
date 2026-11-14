@@ -487,7 +487,10 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
         if !module.verified(&bytes) {
             return Err("Plugin module checksum does not match its package".into());
         }
-        crate::plugin_runtime::validate(&bytes, matches!(package.source, Source::HttpsJson))?;
+        crate::plugin_runtime::validate(
+            &bytes,
+            matches!(package.source, Source::HttpsJson | Source::SmartHome),
+        )?;
         let path = module.cache_path(&dir);
         let staged = path.with_extension(format!("{}.tmp", std::process::id()));
         let result = (|| -> io::Result<()> {
@@ -504,7 +507,7 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
     if let Some(code) = &package.wasm {
         crate::plugin_runtime::validate(
             &crate::plugin_runtime::decode(code)?,
-            matches!(package.source, Source::HttpsJson),
+            matches!(package.source, Source::HttpsJson | Source::SmartHome),
         )?;
     }
     let temporary = path.with_extension("tmp");
@@ -538,7 +541,7 @@ pub fn rollback(root: &Path, plugin: &Plugin) -> Result<(), String> {
     if let Some(code) = candidate.wasm {
         crate::plugin_runtime::validate(
             &crate::plugin_runtime::decode(&code)?,
-            matches!(candidate.source, Source::HttpsJson),
+            matches!(candidate.source, Source::HttpsJson | Source::SmartHome),
         )?;
     }
     fs::rename(previous, path).map_err(|error| error.to_string())
@@ -590,12 +593,17 @@ fn valid_plugin(plugin: &Plugin) -> bool {
         && plugin.description.len() <= 256
         && plugin.text.len() <= 1024
         && plugin.wasm.as_ref().is_none_or(|code| {
-            matches!(plugin.source, Source::Wasm | Source::HttpsJson)
-                && crate::plugin_runtime::decode(code).is_ok()
+            matches!(
+                plugin.source,
+                Source::Wasm | Source::HttpsJson | Source::SmartHome
+            ) && crate::plugin_runtime::decode(code).is_ok()
         })
         && plugin.module.as_ref().is_none_or(|module| {
             plugin.wasm.is_none()
-                && matches!(plugin.source, Source::Wasm | Source::HttpsJson)
+                && matches!(
+                    plugin.source,
+                    Source::Wasm | Source::HttpsJson | Source::SmartHome
+                )
                 && module.valid()
         })
         && plugin.artifact.as_ref().is_none_or(Artifact::valid)

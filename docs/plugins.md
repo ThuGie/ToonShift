@@ -4,7 +4,7 @@
 
 Link your devices in Home Assistant first. For Smart Life devices, use the [Home Assistant Tuya integration](https://www.home-assistant.io/integrations/tuya/).
 
-1. Create a long-lived access token in your Home Assistant user profile. Use a dedicated Home Assistant account with access to the switches you want to control.
+1. Install or update **Smart Home Controls** from the official Store. Release 1.1 ships its connector as a separate WebAssembly binary. Create a long-lived access token in your Home Assistant user profile. Use a dedicated Home Assistant account with access to the switches you want to control.
 2. On the Toon, open **Settings → Smart home → Connection setup**. You can also open **Smart Home Controls** from its dashboard tile.
 3. Enter the Home Assistant HTTPS URL and long-lived access token. Tap **Find switches** and select the switches you want to allow.
 4. Tap **Save connection**. ToonShift validates your selection and stores the credentials in a private file. Use **Refresh** to check current states. ToonShift reads back the reported state after each command.
