@@ -31,9 +31,18 @@ impl Language {
             "Switches" => "Schakelaars",
             "Checking Home Assistant…" => "Home Assistant controleren…",
             "No selected switches found" => "Geen geselecteerde schakelaars gevonden",
-            "Configure Home Assistant over SSH first." => {
-                "Configureer Home Assistant eerst via SSH."
-            }
+            "Connect Home Assistant to get started." => "Verbind Home Assistant om te beginnen.",
+            "Connection setup" => "Verbinding instellen",
+            "Home Assistant HTTPS URL" => "Home Assistant HTTPS-adres",
+            "Long-lived access token" => "Langlevend toegangstoken",
+            "Find switches" => "Schakelaars zoeken",
+            "Choose up to 32 switches" => "Kies maximaal 32 schakelaars",
+            "No switches found in Home Assistant" => "Geen schakelaars gevonden in Home Assistant",
+            "Save connection" => "Verbinding opslaan",
+            "Disconnect" => "Verbinding verwijderen",
+            "Remove the Home Assistant connection?" => "De Home Assistant-verbinding verwijderen?",
+            "Selected" => "Geselecteerd",
+            "Select" => "Selecteren",
             "All widgets" => "Alle widgets",
             "On dashboard" => "Op dashboard",
             "No widgets on the dashboard" => "Geen widgets op het dashboard",

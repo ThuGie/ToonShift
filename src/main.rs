@@ -364,6 +364,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (smart_sender, smart_receiver) = std::sync::mpsc::channel();
     let mut smart_switches = None;
     let mut smart_busy = false;
+    let mut smart_setup_work = None;
     let (version_sender, version_receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = version_sender.send(thermostat::firmware_version());
@@ -568,7 +569,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             dirty = true;
         }
         if let Ok(result) = smart_receiver.try_recv() {
-            smart_switches = Some(result);
+            if let Some(discovery) = smart_setup_work.take() {
+                if let Some(rows) = ui.smart_setup_result(result, discovery) {
+                    smart_switches = Some(Ok(rows));
+                }
+            } else {
+                smart_switches = Some(result);
+            }
             smart_busy = false;
             dirty = true;
         }
@@ -726,6 +733,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::Theme(theme)) => next.theme = theme,
             Some(Action::Appearance(appearance)) => next.appearance = appearance,
             Some(Action::Language(language)) => next.language = language,
+            Some(action @ (Action::SmartDiscover | Action::SmartSave)) => {
+                if !smart_busy {
+                    if let Some(config) = ui.smart_config() {
+                        let discovery = matches!(action, Action::SmartDiscover);
+                        smart_setup_work = Some(discovery);
+                        smart_busy = true;
+                        let sender = smart_sender.clone();
+                        std::thread::spawn(move || {
+                            let result = (|| {
+                                config.validate()?;
+                                let mut rows = config.list(root)?;
+                                if !discovery {
+                                    rows.retain(|row| config.switches.contains(&row.entity_id));
+                                    if rows.len() != config.switches.len() {
+                                        return Err(
+                                            "Some selected switches are no longer available."
+                                                .into(),
+                                        );
+                                    }
+                                    smart_home::save(root, &config)?;
+                                }
+                                rows.sort_by(|a, b| a.entity_id.cmp(&b.entity_id));
+                                Ok(rows)
+                            })();
+                            let _ = sender.send(result);
+                        });
+                    }
+                }
+                persist = false;
+            }
+            Some(Action::SmartDisconnect) => {
+                if !smart_busy {
+                    ui.finish_smart_disconnect();
+                    smart_busy = true;
+                    let sender = smart_sender.clone();
+                    std::thread::spawn(move || {
+                        let result = smart_home::disconnect(root)
+                            .and_then(|()| Err("Connect Home Assistant to get started.".into()));
+                        let _ = sender.send(result);
+                    });
+                }
+                persist = false;
+            }
             Some(action @ (Action::SmartHome | Action::SmartSwitch(_, _))) => {
                 if !smart_busy {
                     let change = match action {

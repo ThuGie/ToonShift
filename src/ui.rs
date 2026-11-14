@@ -38,11 +38,28 @@ enum Page {
     Advanced,
 }
 
+#[derive(Default)]
+struct SmartSetup {
+    fields: [String; 2],
+    token: bool,
+    discovered: Option<Vec<crate::smart_home::Switch>>,
+    selected: std::collections::BTreeSet<usize>,
+    error: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 pub enum Action {
     SmartHome,
     SmartSwitch(usize, bool),
     SmartPage(usize),
+    SmartSetup,
+    SmartField(bool),
+    SmartDiscover,
+    SmartBack,
+    SmartSelect(usize),
+    SmartSave,
+    SmartConfirmDisconnect,
+    SmartDisconnect,
     StoreFilter(bool),
     MeterSource(crate::plugins::Metric, usize),
     AutomaticMeter(crate::plugins::Metric),
@@ -174,6 +191,8 @@ fn palette(settings: &Settings, hour: u8) -> Palette {
 
 pub struct Ui {
     smart_page: usize,
+    smart_setup: Option<SmartSetup>,
+    smart_disconnect: bool,
     hardware: hardware::Controls,
     pub pixels: Vec<u32>,
     font: Font,
@@ -218,6 +237,8 @@ impl Ui {
     pub fn new() -> Self {
         Self {
             smart_page: 0,
+            smart_setup: None,
+            smart_disconnect: false,
             hardware: Default::default(),
             pixels: vec![0; WIDTH * HEIGHT],
             font: Font::from_bytes(
@@ -469,11 +490,48 @@ impl Ui {
             self.resetting_dashboard = false;
             self.wifi = None;
             self.repository = None;
+            self.smart_setup = None;
+            self.smart_disconnect = false;
         }
         match action {
             Action::SmartHome => {
                 self.page = Page::SmartHome;
+                self.smart_setup = None;
+                self.smart_disconnect = false;
+                self.repository = None;
                 return Some(action);
+            }
+            Action::SmartSetup => {
+                self.smart_setup = Some(SmartSetup::default());
+                self.smart_page = 0;
+                self.repository = Some(TextEntry {
+                    text: "https://".into(),
+                    ..Default::default()
+                });
+            }
+            Action::SmartField(token) => {
+                if let (Some(setup), Some(entry)) = (&mut self.smart_setup, &mut self.repository) {
+                    std::mem::swap(&mut entry.text, &mut setup.fields[usize::from(setup.token)]);
+                    setup.token = token;
+                    std::mem::swap(&mut entry.text, &mut setup.fields[usize::from(token)]);
+                    entry.symbols = false;
+                    entry.shift = false;
+                }
+            }
+            Action::SmartSelect(index) => {
+                if let Some(setup) = &mut self.smart_setup {
+                    if !setup.selected.remove(&index) && setup.selected.len() < 32 {
+                        setup.selected.insert(index);
+                    }
+                }
+            }
+            Action::SmartConfirmDisconnect => self.smart_disconnect = true,
+            Action::SmartBack => {
+                if let Some(setup) = &mut self.smart_setup {
+                    setup.discovered = None;
+                    setup.selected.clear();
+                    setup.error = None;
+                }
             }
             Action::SmartPage(page) => self.smart_page = page,
             Action::StoreFilter(installed_only) => {
@@ -641,7 +699,12 @@ impl Ui {
                         target.push(key);
                     }
                 } else if let Some(entry) = &mut self.repository {
-                    if entry.text.len() < 185 {
+                    let limit = if self.smart_setup.as_ref().is_some_and(|setup| setup.token) {
+                        4096
+                    } else {
+                        270
+                    };
+                    if entry.text.len() + key.len_utf8() <= limit {
                         entry.text.push(key);
                     }
                 }
@@ -3277,6 +3340,43 @@ impl Ui {
             self.text(56, 220, "Checking Home Assistant…", 22, p.muted, 960);
             return;
         }
+        if self.smart_disconnect {
+            self.text(
+                56,
+                220,
+                "Remove the Home Assistant connection?",
+                23,
+                p.text,
+                960,
+            );
+            self.button(
+                Rect(56, 475, 210, 48),
+                "Cancel",
+                p,
+                false,
+                Action::SmartHome,
+            );
+            self.button(
+                Rect(752, 475, 215, 48),
+                "Disconnect",
+                p,
+                true,
+                Action::SmartDisconnect,
+            );
+            return;
+        }
+        if let Some(setup) = self.smart_setup.take() {
+            self.draw_smart_setup(&setup, p);
+            self.smart_setup = Some(setup);
+            return;
+        }
+        self.button(
+            Rect(510, 116, 228, 45),
+            "Connection setup",
+            p,
+            false,
+            Action::SmartSetup,
+        );
         self.button(
             Rect(754, 116, 215, 45),
             "Refresh",
@@ -3284,6 +3384,15 @@ impl Ui {
             false,
             Action::SmartHome,
         );
+        if view.root.join("home-assistant.json").is_file() {
+            self.button(
+                Rect(320, 480, 270, 45),
+                "Disconnect",
+                p,
+                false,
+                Action::SmartConfirmDisconnect,
+            );
+        }
         match view.smart_switches {
             Some(Ok(rows)) => {
                 let page = self.smart_page.min(rows.len().saturating_sub(1) / 4);
@@ -3330,6 +3439,166 @@ impl Ui {
             }
             Some(Err(error)) => self.text(56, 220, error, 20, p.muted, 960),
             None => {}
+        }
+    }
+
+    fn draw_smart_setup(&mut self, setup: &SmartSetup, p: &Palette) {
+        if let Some(rows) = &setup.discovered {
+            let page = self.smart_page.min(rows.len().saturating_sub(1) / 4);
+            self.text(56, 190, "Choose up to 32 switches", 22, p.text, 960);
+            if rows.is_empty() {
+                self.text(
+                    56,
+                    245,
+                    "No switches found in Home Assistant",
+                    22,
+                    p.muted,
+                    960,
+                );
+            }
+            for (row, switch) in rows.iter().skip(page * 4).take(4).enumerate() {
+                let index = page * 4 + row;
+                let y = 208 + row * 52;
+                self.raw_text(56, y + 28, switch.name(), 20, p.text, 740);
+                let selected = setup.selected.contains(&index);
+                self.button(
+                    Rect(754, y, 215, 42),
+                    if selected { "Selected" } else { "Select" },
+                    p,
+                    selected,
+                    Action::SmartSelect(index),
+                );
+            }
+            if page > 0 {
+                self.button(
+                    Rect(280, 474, 135, 48),
+                    "Previous",
+                    p,
+                    false,
+                    Action::SmartPage(page - 1),
+                );
+            }
+            if (page + 1) * 4 < rows.len() {
+                self.button(
+                    Rect(430, 474, 135, 48),
+                    "Next",
+                    p,
+                    false,
+                    Action::SmartPage(page + 1),
+                );
+            }
+            if !setup.selected.is_empty() {
+                self.button(
+                    Rect(754, 474, 215, 48),
+                    "Save connection",
+                    p,
+                    true,
+                    Action::SmartSave,
+                );
+            }
+        } else if let Some(entry) = self.repository.take() {
+            self.button(
+                Rect(56, 162, 447, 44),
+                "Home Assistant HTTPS URL",
+                p,
+                !setup.token,
+                Action::SmartField(false),
+            );
+            self.button(
+                Rect(521, 162, 447, 44),
+                "Long-lived access token",
+                p,
+                setup.token,
+                Action::SmartField(true),
+            );
+            let url = if setup.token {
+                &setup.fields[0]
+            } else {
+                &entry.text
+            };
+            let url_tail: String = url
+                .chars()
+                .rev()
+                .take(38)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            self.raw_text(58, 225, &url_tail, 16, p.text, 510);
+            let token = if setup.token {
+                &entry.text
+            } else {
+                &setup.fields[1]
+            };
+            self.raw_text(525, 225, &"•".repeat(token.len().min(12)), 16, p.text, 962);
+            self.keyboard(entry.symbols, entry.shift, p);
+            self.repository = Some(entry);
+            self.button(
+                Rect(754, 474, 215, 48),
+                "Find switches",
+                p,
+                true,
+                Action::SmartDiscover,
+            );
+        }
+        if let Some(error) = &setup.error {
+            self.text(56, 463, error, 15, p.text, 967);
+        }
+        let (label, action) = if setup.discovered.is_some() {
+            ("Back", Action::SmartBack)
+        } else {
+            ("Cancel", Action::SmartHome)
+        };
+        self.button(Rect(56, 474, 210, 48), label, p, false, action);
+    }
+
+    pub fn finish_smart_disconnect(&mut self) {
+        self.smart_disconnect = false;
+    }
+
+    pub fn smart_config(&self) -> Option<crate::smart_home::Config> {
+        let setup = self.smart_setup.as_ref()?;
+        let mut fields = setup.fields.clone();
+        fields[usize::from(setup.token)].clone_from(&self.repository.as_ref()?.text);
+        let [url, token] = fields;
+        let switches = setup.discovered.as_ref().map_or_else(Vec::new, |rows| {
+            setup
+                .selected
+                .iter()
+                .filter_map(|&index| rows.get(index).map(|row| row.entity_id.clone()))
+                .collect()
+        });
+        Some(crate::smart_home::Config {
+            url,
+            token,
+            switches,
+        })
+    }
+
+    pub fn smart_setup_result(
+        &mut self,
+        result: Result<Vec<crate::smart_home::Switch>, String>,
+        discovery: bool,
+    ) -> Option<Vec<crate::smart_home::Switch>> {
+        let setup = self.smart_setup.as_mut()?;
+        match result {
+            Ok(rows) if discovery => {
+                setup.error = None;
+                setup.discovered = Some(rows);
+                setup.selected.clear();
+                self.smart_page = 0;
+                None
+            }
+            Ok(rows) => {
+                self.smart_setup = None;
+                self.repository = None;
+                self.smart_page = 0;
+                Some(rows)
+            }
+            Err(error) => {
+                setup.error = Some(error);
+                None
+            }
         }
     }
 
@@ -3465,6 +3734,37 @@ impl Ui {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
+
+    #[test]
+    fn smart_home_touch_setup_keeps_credentials_and_selected_switches_separate() {
+        let mut ui = Ui::new();
+        let tap = |ui: &mut Ui, action| {
+            ui.buttons.clear();
+            ui.buttons.push((Rect(0, 0, 30, 30), action));
+            ui.hit(15, 15);
+        };
+        tap(&mut ui, Action::SmartHome);
+        tap(&mut ui, Action::SmartSetup);
+        for key in "ha.example.net".chars() {
+            tap(&mut ui, Action::Key(key));
+        }
+        tap(&mut ui, Action::SmartField(true));
+        let token = "x".repeat(200);
+        for key in token.chars() {
+            tap(&mut ui, Action::Key(key));
+        }
+        let discovered =
+            serde_json::from_str(r#"[{"entity_id":"switch.plug","state":"on","attributes":{}}]"#)
+                .unwrap();
+        ui.smart_setup_result(Ok(discovered), true);
+        tap(&mut ui, Action::SmartSelect(0));
+        let config = ui.smart_config().unwrap();
+        assert_eq!(config.url, "https://ha.example.net");
+        assert_eq!(config.token, token);
+        assert_eq!(config.switches, ["switch.plug"]);
+        tap(&mut ui, Action::Home);
+        assert!(ui.smart_config().is_none());
+    }
 
     #[test]
     fn drag_crosses_into_a_partial_page_and_back() {

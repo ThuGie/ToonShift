@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
     pub url: String,
     pub token: String,
@@ -179,7 +179,7 @@ pub fn load(root: &Path) -> Result<Config, String> {
     use std::os::unix::fs::PermissionsExt;
     let path = root.join("home-assistant.json");
     let metadata =
-        std::fs::symlink_metadata(&path).map_err(|_| "Configure Home Assistant over SSH first.")?;
+        std::fs::symlink_metadata(&path).map_err(|_| "Connect Home Assistant to get started.")?;
     if !metadata.is_file() || metadata.len() > 8192 || metadata.permissions().mode() & 0o077 != 0 {
         return Err("Home Assistant configuration must be a private file.".into());
     }
@@ -193,8 +193,7 @@ pub fn load(root: &Path) -> Result<Config, String> {
 
 #[cfg(target_os = "linux")]
 pub fn setup(root: &Path) -> Result<(), String> {
-    use std::io::{Read, Write};
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::io::Read;
     let mut bytes = Vec::new();
     std::io::stdin()
         .take(8193)
@@ -220,6 +219,18 @@ pub fn setup(root: &Path) -> Result<(), String> {
     {
         return Err("One or more selected switches were not found in Home Assistant".into());
     }
+    save(root, &config)
+}
+
+#[cfg(target_os = "linux")]
+pub fn save(root: &Path, config: &Config) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    config.validate()?;
+    let bytes = serde_json::to_vec(config).map_err(|_| "Invalid Home Assistant settings")?;
+    if bytes.len() > 8192 {
+        return Err("Home Assistant settings are too large".into());
+    }
     let temporary = root.join(format!(".home-assistant-{}.tmp", std::process::id()));
     let mut file = std::fs::OpenOptions::new()
         .mode(0o600)
@@ -236,6 +247,15 @@ pub fn setup(root: &Path) -> Result<(), String> {
         return Err(error.to_string());
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn disconnect(root: &Path) -> Result<(), String> {
+    match std::fs::remove_file(root.join("home-assistant.json")) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("Could not remove the Home Assistant connection.".into()),
+    }
 }
 
 #[cfg(target_os = "linux")]
