@@ -66,6 +66,14 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
     };
     let root = Path::new(".");
     let plugins = plugins::catalog(root);
+    let telemetry = [
+        (
+            plugins::Metric::Electricity,
+            (318.0, std::time::Instant::now()),
+        ),
+        (plugins::Metric::Gas, (0.0, std::time::Instant::now())),
+    ]
+    .into();
     let status = thermostat::Status {
         current_temp: "2140".into(),
         current_setpoint: "2200".into(),
@@ -101,7 +109,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         catalog_message: None,
         catalog_sources: &[],
         readings: &Default::default(),
-        telemetry: &Default::default(),
+        telemetry: &telemetry,
         energy: None,
         diagnostics_message: None,
         firmware_version: None,

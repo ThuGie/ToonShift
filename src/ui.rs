@@ -1816,7 +1816,7 @@ impl Ui {
             return;
         }
         self.panel(Rect(32, 100, 532, 448), p.card, 26);
-        self.text(62, 154, "Room temperature", 25, p.muted, 535);
+        self.text(62, 145, "Room temperature", 23, p.muted, 535);
         if let Some(status) = view.status {
             let (label, attention) = match (status.connection.as_str(), status.burner_info.as_str())
             {
@@ -1837,7 +1837,7 @@ impl Ui {
             };
             self.text(
                 63,
-                305,
+                259,
                 label,
                 18,
                 if attention { p.accent } else { p.muted },
@@ -1846,31 +1846,36 @@ impl Ui {
         }
         self.text(
             55,
-            270,
+            224,
             &temperature(view.status.map(|s| s.current_temp.as_str())),
-            98,
+            82,
             p.text,
             535,
         );
-        self.text(63, 337, "Target temperature", 23, p.muted, 535);
+        self.text(63, 302, "Target temperature", 21, p.muted, 535);
+        let target = temperature(view.status.map(|s| s.current_setpoint.as_str()));
+        let target_width = target
+            .chars()
+            .map(|c| self.font.metrics(c, 45.0).advance_width)
+            .sum::<f32>();
         self.text(
-            177,
-            420,
-            &temperature(view.status.map(|s| s.current_setpoint.as_str())),
-            50,
+            298 - (target_width as usize / 2).min(148),
+            358,
+            &target,
+            45,
             p.text,
             428,
         );
         if view.status.is_some() && !view.pending {
             self.button(
-                Rect(62, 365, 70, 75),
+                Rect(62, 312, 70, 62),
                 "−",
                 p,
                 false,
                 Action::Heat(Command::Adjust(-50)),
             );
             self.button(
-                Rect(464, 365, 70, 75),
+                Rect(464, 312, 70, 62),
                 "+",
                 p,
                 false,
@@ -1886,7 +1891,7 @@ impl Ui {
                 _ => ("Schedule off", false),
             };
             self.button(
-                Rect(62, 445, 472, 45),
+                Rect(62, 384, 472, 44),
                 label,
                 p,
                 enabled,
@@ -1895,7 +1900,7 @@ impl Ui {
         } else {
             self.text(
                 62,
-                481,
+                413,
                 if view.pending {
                     "Updating thermostat…"
                 } else {
@@ -1907,19 +1912,38 @@ impl Ui {
             );
         }
         self.button(
-            Rect(62, 496, 230, 44),
+            Rect(62, 436, 230, 44),
             "Heating presets",
             p,
             false,
             Action::Presets,
         );
         self.button(
-            Rect(302, 496, 232, 44),
+            Rect(302, 436, 232, 44),
             "Heating and sensors",
             p,
             false,
             Action::HeatingDetails,
         );
+        for (x, meter, metric) in [
+            (
+                62,
+                crate::energy::Meter::Electricity,
+                crate::plugins::Metric::Electricity,
+            ),
+            (302, crate::energy::Meter::Gas, crate::plugins::Metric::Gas),
+        ] {
+            let rect = Rect(x, 488, 232, 44);
+            self.panel(rect, p.raised, 14);
+            self.text(x + 12, 515, meter.title(), 16, p.muted, x + 112);
+            let value = crate::telemetry::current(metric, view.telemetry).map_or_else(
+                || "—".into(),
+                |_| crate::telemetry::display(metric, view.telemetry),
+            );
+            self.raw_text(x + 115, 515, &value, 18, p.text, x + 221);
+            self.buttons
+                .push((rect, Action::Energy(meter, crate::energy::Period::Day)));
+        }
 
         let pages = view.settings.dashboard_pages().max(1);
         self.dashboard_page = self.dashboard_page.min(pages - 1);
@@ -2239,6 +2263,11 @@ impl Ui {
         if interactive && !editing && occupied > 0 && occupied < count {
             let x = 584 + (occupied % columns) * 210;
             let y = 100 + (occupied / columns) * 203;
+            let width = if occupied.is_multiple_of(columns) {
+                408
+            } else {
+                width
+            };
             self.button(
                 Rect(x, y, width, 192),
                 "+ Add widget",
