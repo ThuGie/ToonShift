@@ -52,17 +52,36 @@ struct Extension {
 }
 
 impl Extension {
+    fn user_origin(&self) -> bool {
+        self.plugin.user_https_origin || self.plugin.lan_read_path.is_some()
+    }
+
+    fn valid_origin(&self, value: &str) -> bool {
+        if self.plugin.lan_read_path.is_some() {
+            crate::plugin_screen::lan_address(value).is_some()
+        } else {
+            crate::plugin_screen::origin(value).is_some()
+        }
+    }
+
     fn origin(&self) -> Option<&str> {
         self.screen
             .fields
             .iter()
-            .find(|field| field.id == "https_origin")
+            .find(|field| {
+                field.id
+                    == if self.plugin.user_https_origin {
+                        "https_origin"
+                    } else {
+                        "lan_address"
+                    }
+            })
             .map(|field| field.value.as_str())
             .or(self.approved_origin.as_deref())
     }
 
     fn ready(&self) -> bool {
-        if self.plugin.user_https_origin {
+        if self.user_origin() {
             self.approved_origin.is_some() && self.origin() == self.approved_origin.as_deref()
         } else {
             self.allowed || self.plugin.https_hosts.is_empty()
@@ -534,10 +553,10 @@ impl Ui {
             }
             Action::ExtensionAllow => {
                 if let Some(extension) = &mut self.extension {
-                    if extension.plugin.user_https_origin {
+                    if extension.user_origin() {
                         extension.approved_origin = extension
                             .origin()
-                            .filter(|origin| crate::plugin_screen::origin(origin).is_some())
+                            .filter(|origin| extension.valid_origin(origin))
                             .map(str::to_owned);
                     } else {
                         extension.permission += 1;
@@ -1310,10 +1329,8 @@ impl Ui {
                 );
             }
             if !extension.ready() {
-                let host = if extension.plugin.user_https_origin {
-                    extension
-                        .origin()
-                        .filter(|url| crate::plugin_screen::origin(url).is_some())
+                let host = if extension.user_origin() {
+                    extension.origin().filter(|url| extension.valid_origin(url))
                 } else {
                     extension
                         .plugin
@@ -1322,7 +1339,12 @@ impl Ui {
                         .map(String::as_str)
                 };
                 if let Some(host) = host {
-                    for (row, host) in host.as_bytes().chunks(50).enumerate() {
+                    let target = extension
+                        .plugin
+                        .lan_read_path
+                        .as_deref()
+                        .map_or_else(|| host.to_owned(), |path| format!("http://{host}{path}"));
+                    for (row, host) in target.as_bytes().chunks(50).enumerate() {
                         self.raw_text(
                             304,
                             444 + row * 18,
@@ -1334,7 +1356,9 @@ impl Ui {
                     }
                     self.button(
                         Rect(761, 482, 206, 44),
-                        &if extension.plugin.user_https_origin {
+                        &if extension.plugin.lan_read_path.is_some() {
+                            "Allow LAN read".into()
+                        } else if extension.plugin.user_https_origin {
                             "Allow HTTPS".into()
                         } else {
                             format!(

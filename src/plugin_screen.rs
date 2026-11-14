@@ -238,7 +238,15 @@ pub fn run_installed(
     };
     let (screen, state, save) = run(&code, event, |request| {
         let body = request.body.as_deref();
-        if plugin.user_https_origin && request.host == "user" {
+        if let Some(path) = &plugin.lan_read_path {
+            if !request.can_read_lan(path) {
+                return Err("Plugin request exceeds its LAN read permission".into());
+            }
+            let address = approved_origin
+                .as_deref()
+                .ok_or("Approve the LAN address first")?;
+            crate::download::lan_read(address, path)
+        } else if plugin.user_https_origin && request.host == "user" {
             let origin = approved_origin
                 .as_deref()
                 .ok_or("Approve the HTTPS endpoint first")?;
@@ -298,6 +306,16 @@ fn timestamp_ms() -> u64 {
 }
 
 impl Request {
+    #[cfg(any(target_os = "linux", test))]
+    fn can_read_lan(&self, path: &str) -> bool {
+        self.host == "user"
+            && self.path == path
+            && valid_lan_path(path)
+            && self.body.is_none()
+            && self.headers.is_empty()
+            && self.array.is_none()
+    }
+
     fn validate_path(&self) -> Result<(), String> {
         if !self.path.starts_with('/')
             || self.path.starts_with("//")
@@ -338,6 +356,24 @@ pub fn origin(url: &str) -> Option<(&str, u16)> {
         .then_some((host, port))
 }
 
+pub fn lan_address(value: &str) -> Option<std::net::Ipv4Addr> {
+    value
+        .parse::<std::net::Ipv4Addr>()
+        .ok()
+        .filter(std::net::Ipv4Addr::is_private)
+}
+
+pub fn valid_lan_path(path: &str) -> bool {
+    path.len() <= 128
+        && path.starts_with('/')
+        && path[1..].split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        })
+}
+
 pub fn valid_host(host: &str) -> bool {
     host.len() <= 253
         && host.contains('.')
@@ -362,6 +398,33 @@ pub fn valid_host(host: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn lan_meter_permission_is_one_credential_free_get() {
+        assert!(lan_address("192.168.1.2").is_some());
+        for address in [
+            "127.0.0.1",
+            "169.254.1.1",
+            "8.8.8.8",
+            "192.168.1.2:80",
+            "meter.local",
+        ] {
+            assert!(lan_address(address).is_none(), "{address}");
+        }
+        let mut request: Request =
+            serde_json::from_value(json!({"host":"user","path":"/api/v1/data"})).unwrap();
+        assert!(request.can_read_lan("/api/v1/data"));
+        assert!(!request.can_read_lan("/api/v1/system"));
+        request
+            .headers
+            .insert("Authorization".into(), "example".into());
+        assert!(!request.can_read_lan("/api/v1/data"));
+        request.headers.clear();
+        request.body = Some("{}".into());
+        assert!(!request.can_read_lan("/api/v1/data"));
+        assert!(!valid_lan_path("/api/%2e%2e/data"));
+        assert!(!valid_lan_path("/api/data?cmd=write"));
+    }
 
     fn event(action: &str, fields: Value, state: Value) -> Event {
         Event {

@@ -165,6 +165,20 @@ fn fetch(ca: &Path, url: &str, resolve: Option<&str>, limit: usize) -> Result<Ve
     transfer(Some(ca), url, resolve, limit, &BTreeMap::new(), None)
 }
 
+#[cfg(target_os = "linux")]
+pub fn lan_read(origin: &str, path: &str) -> Result<Vec<u8>, String> {
+    let address =
+        crate::plugin_screen::lan_address(origin).ok_or("Expected a private LAN IPv4 address")?;
+    transfer(
+        None,
+        &format!("http://{address}{path}"),
+        Some(&format!("{address}:80:{address}")),
+        16_384,
+        &BTreeMap::new(),
+        None,
+    )
+}
+
 fn transfer(
     ca: Option<&Path>,
     url: &str,
@@ -179,7 +193,11 @@ fn transfer(
         "-fsS",
         "--globoff",
         "--proto",
-        "=https",
+        if url.starts_with("http://") && resolve.is_some() && ca.is_none() {
+            "=http"
+        } else {
+            "=https"
+        },
         "--connect-timeout",
         "5",
         "--max-time",

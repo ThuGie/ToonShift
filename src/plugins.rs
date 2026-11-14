@@ -41,6 +41,7 @@ pub struct Plugin {
     pub https_hosts: Vec<String>,
     #[serde(default)]
     pub user_https_origin: bool,
+    pub lan_read_path: Option<String>,
     #[serde(default)]
     pub text: String,
     #[serde(default)]
@@ -615,6 +616,12 @@ fn valid_plugin(plugin: &Plugin) -> bool {
         && (plugin.https_hosts.is_empty() || matches!(plugin.source, Source::Interactive))
         && (!plugin.user_https_origin
             || (matches!(plugin.source, Source::Interactive) && plugin.https_hosts.is_empty()))
+        && plugin.lan_read_path.as_deref().is_none_or(|path| {
+            matches!(plugin.source, Source::Interactive)
+                && !plugin.user_https_origin
+                && plugin.https_hosts.is_empty()
+                && crate::plugin_screen::valid_lan_path(path)
+        })
         && plugin.wasm.as_ref().is_none_or(|code| {
             matches!(
                 plugin.source,
@@ -736,6 +743,7 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                         plugin.wasm = installed.wasm;
                         plugin.https_hosts = installed.https_hosts;
                         plugin.user_https_origin = installed.user_https_origin;
+                        plugin.lan_read_path = installed.lan_read_path;
                         plugin.text = installed.text;
                         plugin.source = installed.source;
                     }
