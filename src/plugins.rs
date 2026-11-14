@@ -43,6 +43,7 @@ pub struct Plugin {
     pub metric: Option<Metric>,
     pub meter: Option<crate::energy::Meter>,
     pub wasm: Option<String>,
+    module: Option<PluginModule>,
     pub artifact: Option<Artifact>,
     #[serde(skip)]
     pub installed_release: Option<String>,
@@ -50,6 +51,43 @@ pub struct Plugin {
     pub previous_release: Option<String>,
     #[serde(skip)]
     pub publisher: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+struct PluginModule {
+    path: String,
+    sha256: String,
+}
+
+#[cfg(test)]
+pub fn checkout_module(root: &Path, package: &Plugin) -> Vec<u8> {
+    let module = package.module.as_ref().unwrap();
+    assert!(module.valid());
+    let bytes = fs::read(root.join(&module.path)).unwrap();
+    assert!(module.verified(&bytes));
+    bytes
+}
+
+impl PluginModule {
+    fn valid(&self) -> bool {
+        self.path.starts_with("modules/")
+            && self.path.ends_with(".wasm")
+            && self.path["modules/".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+            && hex_bytes::<32>(&self.sha256).is_some()
+    }
+
+    fn cache_path(&self, packages: &Path) -> std::path::PathBuf {
+        packages.join(format!("module-{}.wasm", self.sha256.to_ascii_lowercase()))
+    }
+
+    fn verified(&self, bytes: &[u8]) -> bool {
+        use sha2::{Digest, Sha256};
+        bytes.len() <= 96000
+            && hex_bytes::<32>(&self.sha256)
+                .is_some_and(|hash| Sha256::digest(bytes).as_slice() == hash)
+    }
 }
 
 impl Plugin {
@@ -439,14 +477,36 @@ pub fn install(root: &Path, plugin: &Plugin) -> Result<(), String> {
     {
         return Err("Plugin package does not match the catalog entry".into());
     }
+    let dir = root.join("packages");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    if let Some(module) = &package.module {
+        let bytes = crate::download::package(
+            &root.join("https-roots.pem"),
+            &format!("{origin}{}", module.path),
+        )?;
+        if !module.verified(&bytes) {
+            return Err("Plugin module checksum does not match its package".into());
+        }
+        crate::plugin_runtime::validate(&bytes, matches!(package.source, Source::HttpsJson))?;
+        let path = module.cache_path(&dir);
+        let staged = path.with_extension(format!("{}.tmp", std::process::id()));
+        let result = (|| -> io::Result<()> {
+            let mut file = File::create(&staged)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            fs::rename(&staged, path)
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(staged);
+            return Err(error.to_string());
+        }
+    }
     if let Some(code) = &package.wasm {
         crate::plugin_runtime::validate(
             &crate::plugin_runtime::decode(code)?,
             matches!(package.source, Source::HttpsJson),
         )?;
     }
-    let dir = root.join("packages");
-    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let temporary = path.with_extension("tmp");
     let mut file = File::create(&temporary).map_err(|err| err.to_string())?;
     file.write_all(&response)
@@ -490,9 +550,28 @@ fn read_package(path: &Path, id: &str) -> Option<(Vec<u8>, Plugin)> {
         return None;
     }
     let bytes = fs::read(path).ok()?;
-    let plugin: Plugin = serde_json::from_slice(&bytes).ok()?;
-    (plugin.id == id && plugin.artifact.is_none() && valid_plugin(&plugin))
-        .then_some((bytes, plugin))
+    let mut plugin: Plugin = serde_json::from_slice(&bytes).ok()?;
+    if plugin.id != id || plugin.artifact.is_some() || !valid_plugin(&plugin) {
+        return None;
+    }
+    if let Some(module) = &plugin.module {
+        use std::fmt::Write as _;
+        let path = module.cache_path(path.parent()?);
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        if !metadata.is_file() || metadata.len() > 96000 {
+            return None;
+        }
+        let code = fs::read(path).ok()?;
+        if !module.verified(&code) {
+            return None;
+        }
+        let mut hex = String::with_capacity(code.len() * 2);
+        for byte in code {
+            write!(hex, "{byte:02x}").ok()?;
+        }
+        plugin.wasm = Some(hex);
+    }
+    Some((bytes, plugin))
 }
 
 fn valid_plugin(plugin: &Plugin) -> bool {
@@ -514,11 +593,18 @@ fn valid_plugin(plugin: &Plugin) -> bool {
             matches!(plugin.source, Source::Wasm | Source::HttpsJson)
                 && crate::plugin_runtime::decode(code).is_ok()
         })
+        && plugin.module.as_ref().is_none_or(|module| {
+            plugin.wasm.is_none()
+                && matches!(plugin.source, Source::Wasm | Source::HttpsJson)
+                && module.valid()
+        })
         && plugin.artifact.as_ref().is_none_or(Artifact::valid)
         && (plugin.artifact.is_some()
             || ((!matches!(plugin.source, Source::BoxTalk) || plugin.metric.is_some())
                 && (!matches!(plugin.source, Source::MeterArchive) || plugin.meter.is_some())
-                && (!matches!(plugin.source, Source::Wasm) || plugin.wasm.is_some())
+                && (!matches!(plugin.source, Source::Wasm)
+                    || plugin.wasm.is_some()
+                    || plugin.module.is_some())
                 && (!matches!(plugin.source, Source::HttpsJson)
                     || plugin.feed.as_ref().is_some_and(|feed| {
                         (1..=24).contains(&feed.places.len())

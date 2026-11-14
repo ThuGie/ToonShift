@@ -396,9 +396,13 @@ mod tests {
     #[ignore = "requires the separate ToonShift-plugins checkout"]
     fn weather_package_runs_forecast_and_geocoding() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let file = root.join("ToonShift-plugins/plugins/toonshift-weather.json");
+        let checkout = root.join("ToonShift-plugins");
+        let file = checkout.join("plugins/toonshift-weather.json");
         let plugin: Plugin = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
-        let code = plugin.wasm.unwrap();
+        let code = crate::plugins::checkout_module(&checkout, &plugin)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         let forecast = br#"{"current":{"temperature_2m":-1.7,"weather_code":63},"daily":{"time":["2026-11-13"],"temperature_2m_min":[-2],"temperature_2m_max":[1],"weather_code":[85]}}"#;
         let reading: Reading =
             parse_executable_response(&code, forecast, Language::Dutch, false).unwrap();

@@ -48,7 +48,7 @@ The `box_talk` source reads local firmware telemetry. Supported metrics are `roo
 
 ## Executable plugins
 
-A package with `source: "wasm"` runs a WebAssembly module in a Wasmi interpreter. The package carries the module bytes as hexadecimal in the `wasm` field and can request a supported read-only telemetry metric with `metric`. The module receives that metric's formatted UTF-8 value at address zero. A module with no metric receives empty input.
+A package with `source: "wasm"` runs a WebAssembly module in Wasmi. Put the compiled binary under `modules/` and declare it as `"module": {"path":"modules/example-1.0.0.wasm","sha256":"…"}`. The signed catalog authenticates the package hash, and the package authenticates the WebAssembly hash. ToonShift verifies the binary before activation and keeps it available by hash for rollback. Previously installed hex-encoded modules still load. A module can request a supported read-only telemetry metric with `metric` and receives its formatted UTF-8 value at address zero.
 
 An `https_json` package can also include `wasm`. ToonShift fetches the configured public HTTPS URL and copies the response into the module's exported `input_buffer() -> i32`. Two bytes precede the response. The first is 0 for forecast or 1 for location search. The second is 0 for English or 1 for Dutch. The module's `render(i32) -> i64` receives the total input length and returns an output pointer in the high 32 bits and its length in the low 32 bits. The output is UTF-8 JSON up to 4 KiB, either `{value, detail, rows: [{date, range, condition}]}` or an array of `{name, latitude, longitude}` search results. Modules run without imports and with bounded memory and fuel. Existing declarative packages still load.
 
