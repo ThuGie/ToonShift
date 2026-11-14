@@ -43,6 +43,8 @@ pub struct Plugin {
     pub user_https_origin: bool,
     pub lan_read_path: Option<String>,
     #[serde(default)]
+    pub telemetry: Vec<Metric>,
+    #[serde(default)]
     pub text: String,
     #[serde(default)]
     pub release: String,
@@ -608,6 +610,19 @@ fn valid_plugin(plugin: &Plugin) -> bool {
             .is_none_or(|title| !title.trim().is_empty() && title.len() <= 96)
         && plugin.description.len() <= 256
         && plugin.text.len() <= 1024
+        && plugin.telemetry.len() <= 4
+        && plugin
+            .telemetry
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+            == plugin.telemetry.len()
+        && (plugin.telemetry.is_empty()
+            || (matches!(plugin.source, Source::Interactive)
+                && plugin.https_hosts.is_empty()
+                && !plugin.user_https_origin
+                && plugin.lan_read_path.is_none()))
         && plugin.https_hosts.len() <= 8
         && plugin
             .https_hosts
@@ -744,6 +759,7 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                         plugin.https_hosts = installed.https_hosts;
                         plugin.user_https_origin = installed.user_https_origin;
                         plugin.lan_read_path = installed.lan_read_path;
+                        plugin.telemetry = installed.telemetry;
                         plugin.text = installed.text;
                         plugin.source = installed.source;
                     }

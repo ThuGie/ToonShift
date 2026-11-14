@@ -1162,7 +1162,11 @@ impl Ui {
     pub fn extension_event(
         &mut self,
         button: Option<usize>,
+        automatic: bool,
     ) -> Option<(Plugin, bool, Option<String>, crate::plugin_screen::Event)> {
+        if self.page != Page::Extension {
+            return None;
+        }
         let extension = self.extension.as_mut()?;
         if extension.busy {
             return None;
@@ -1172,6 +1176,13 @@ impl Ui {
         }
         let action = match button {
             Some(index) => extension.screen.buttons.get(index)?.id.clone(),
+            None if automatic
+                && extension.editing.is_none()
+                && !extension.plugin.telemetry.is_empty() =>
+            {
+                "telemetry".into()
+            }
+            None if automatic => return None,
             None => "open".into(),
         };
         extension.busy = true;
@@ -1194,6 +1205,7 @@ impl Ui {
                     .map(|field| (field.id.clone(), field.value.clone()))
                     .collect(),
                 state: extension.state.clone(),
+                telemetry: serde_json::Value::Null,
             },
         ))
     }

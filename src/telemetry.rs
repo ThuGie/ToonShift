@@ -127,3 +127,28 @@ pub fn current(metric: Metric, values: &Readings) -> Option<(f64, Duration)> {
     let age = received.elapsed();
     (age < Duration::from_secs(lifetime)).then_some((*value, age))
 }
+
+#[cfg(any(target_os = "linux", test))]
+pub fn plugin_snapshot(metrics: &[Metric], values: &Readings) -> serde_json::Value {
+    use serde_json::json;
+    let mut output = serde_json::Map::new();
+    for &metric in metrics {
+        let name = match metric {
+            Metric::RoomHumidity => "room_humidity",
+            Metric::RoomTemperature => "room_temperature",
+            Metric::Electricity => "electricity",
+            Metric::Gas => "gas",
+        };
+        let reading = current(metric, values).map(|(value, age)| {
+            let (value, unit) = match metric {
+                Metric::RoomHumidity => (value, "%"),
+                Metric::RoomTemperature => (value / 100.0, "°C"),
+                Metric::Electricity => (value, "W"),
+                Metric::Gas => (value, "L/h"),
+            };
+            json!({"value": value, "unit": unit, "age_seconds": age.as_secs()})
+        });
+        output.insert(name.into(), reading.unwrap_or_default());
+    }
+    output.into()
+}

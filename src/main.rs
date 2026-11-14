@@ -399,6 +399,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (extension_sender, extension_receiver) = std::sync::mpsc::channel();
     let mut extension_generation = 0_u64;
     let mut extension_busy = false;
+    let mut extension_poll = std::time::Instant::now();
+    let submit_extension = |generation,
+                            readings: &telemetry::Readings,
+                            (plugin, allowed, origin, mut event): (
+        plugins::Plugin,
+        bool,
+        Option<String>,
+        plugin_screen::Event,
+    )| {
+        event.telemetry = telemetry::plugin_snapshot(&plugin.telemetry, readings);
+        let sender = extension_sender.clone();
+        std::thread::spawn(move || {
+            let result = plugin_screen::run_installed(root, &plugin, allowed, origin, event);
+            let _ = sender.send((generation, result));
+        });
+    };
     let mut feed_poll = std::time::Instant::now();
     let mut hardware = advanced::State::new();
     loop {
@@ -407,6 +423,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if generation == extension_generation {
                 ui.extension_result(result);
                 dirty = true;
+            }
+        }
+        if !extension_busy && !ambient && extension_poll.elapsed() >= Duration::from_secs(5) {
+            extension_poll = std::time::Instant::now();
+            if let Some(job) = ui.extension_event(None, true) {
+                extension_busy = true;
+                submit_extension(extension_generation, &telemetry, job);
             }
         }
         if let Ok((sources, result)) = meter_receiver.try_recv() {
@@ -701,15 +724,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ui.extension_result(Err(
                         "Another plugin is still working. Reopen this tile to retry.".into(),
                     ));
-                } else if let Some((plugin, allowed, origin, event)) = ui.extension_event(button) {
+                } else if let Some(job) = ui.extension_event(button, false) {
                     extension_busy = true;
-                    let sender = extension_sender.clone();
-                    let generation = extension_generation;
-                    std::thread::spawn(move || {
-                        let result =
-                            plugin_screen::run_installed(root, &plugin, allowed, origin, event);
-                        let _ = sender.send((generation, result));
-                    });
+                    extension_poll = std::time::Instant::now();
+                    submit_extension(extension_generation, &telemetry, job);
                 }
                 persist = false;
             }

@@ -133,6 +133,7 @@ pub struct Event {
     pub language: &'static str,
     pub fields: BTreeMap<String, String>,
     pub state: Value,
+    pub telemetry: Value,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -141,11 +142,11 @@ fn run(
     event: Event,
     mut send: impl FnMut(&Request) -> Result<Vec<u8>, String>,
 ) -> Result<(Screen, Value, bool), String> {
-    let user_action = event.action != "open";
+    let user_action = !matches!(event.action.as_str(), "open" | "telemetry");
     let mut input = serde_json::json!({
         "version": 1, "action": event.action, "language": event.language,
         "fields": event.fields, "state": event.state,
-        "timestamp_ms": timestamp_ms(),
+        "timestamp_ms": timestamp_ms(), "telemetry": event.telemetry,
     });
     for step in 0..=6 {
         let output = crate::plugin_runtime::render_feed(code, input.to_string().as_bytes())?;
@@ -432,6 +433,7 @@ mod tests {
             language: "en",
             fields: serde_json::from_value(fields).unwrap(),
             state,
+            telemetry: Value::Null,
         }
     }
 

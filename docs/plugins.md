@@ -90,3 +90,7 @@ Keep provider state and protocol code in the WebAssembly module. The module has 
 ### Read a local meter
 
 An interactive package can declare a single `lan_read_path` for a legacy LAN measurement API. It presents a field with ID `lan_address`. ToonShift asks the user to approve the private IPv4 address and exact path before the plugin can read it. The module requests `{"host":"user","path":"/api/v1/data"}`. The host only permits a GET to that path on port 80, with no headers, body, credentials, query, or redirects. This uses unencrypted local HTTP. The LAN permission cannot be combined with public or user-configured HTTPS permissions.
+
+### Read Toon meter and room telemetry
+
+Declare `telemetry` as a list of metrics in an interactive package. Supported names are `electricity` (W), `gas` (L/h), `room_temperature` (°C), and `room_humidity` (%). Each requested entry is either null or an object with `value`, `unit`, and `age_seconds`. Meter readings follow ToonShift’s configured sources. The host supplies a snapshot on open and button actions, and emits the reserved `telemetry` action every five seconds while the screen is visible and the keyboard is closed. The automatic action can only render a screen. Telemetry packages cannot request network permissions.
