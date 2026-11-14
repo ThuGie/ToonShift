@@ -7,6 +7,7 @@ use std::path::Path;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
+    SmartHome,
     Clock,
     Boiler,
     NextTarget,

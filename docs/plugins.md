@@ -1,5 +1,21 @@
 # ToonShift plugin repositories
 
+## Smart Home Controls
+
+Link your devices in Home Assistant first. For Smart Life devices, use the [Home Assistant Tuya integration](https://www.home-assistant.io/integrations/tuya/).
+
+1. Create a long-lived access token in your Home Assistant user profile. Use a dedicated Home Assistant account with access to the switches you want to control.
+2. Make a private JSON file on your computer with the HTTPS URL, token, and entity IDs. Use an empty switch list to test the connection and print available switch IDs. That discovery run does not save configuration.
+
+   ```json
+   {"url":"https://ha.example.net","token":"YOUR_TOKEN","switches":["switch.desk_plug"]}
+   ```
+
+3. From a POSIX shell, run `ssh toon '/mnt/data/toon-rust/toon-rust --setup-smart-home' < home-assistant.json`. The command checks the selected IDs before saving. If Home Assistant uses a private certificate authority, copy its public CA certificate to `/mnt/data/toon-rust/home-assistant-ca.pem` before setup.
+4. Open **Settings → Smart home** or install **Smart Home Controls** from the refreshed official Store and tap its dashboard tile. Select **Refresh** to check the current state. ToonShift sends explicit on or off commands and checks the reported state before confirming.
+
+Repeat setup with a new selection or token to update it. To disconnect, remove `/mnt/data/toon-rust/home-assistant.json` and revoke the token in Home Assistant.
+
 The Store reads built-in widgets and local JSON files in `/mnt/data/toon-rust/catalog`. To add any number of sources within the catalog limits, sync each public GitHub repository independently. The same source filename is updated atomically, and other repositories keep their files.
 
 ```powershell

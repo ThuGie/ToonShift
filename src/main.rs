@@ -9,6 +9,7 @@ mod plugin_runtime;
 mod plugins;
 mod presets;
 mod schedule;
+mod smart_home;
 mod telemetry;
 mod thermostat;
 mod ui;
@@ -138,6 +139,8 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         energy: Some(&energy),
         diagnostics_message: None,
         firmware_version: None,
+        smart_switches: None,
+        smart_busy: false,
         history: None,
         ambient: false,
         location_results: None,
@@ -184,6 +187,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use ui::Action;
 
     let root = Path::new("/mnt/data/toon-rust");
+    if std::env::args().nth(1).as_deref() == Some("--setup-smart-home") {
+        return smart_home::setup(root).map_err(Into::into);
+    }
     if std::env::args().nth(1).as_deref() == Some("--api-client") {
         api::manage_clients(root, std::env::args().skip(2))?;
         return Ok(());
@@ -347,6 +353,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (diagnostics_sender, diagnostics_receiver) = std::sync::mpsc::channel();
     let mut exporting_diagnostics = false;
     let mut diagnostics_message = None;
+    let (smart_sender, smart_receiver) = std::sync::mpsc::channel();
+    let mut smart_switches = None;
+    let mut smart_busy = false;
     let (version_sender, version_receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = version_sender.send(thermostat::firmware_version());
@@ -535,6 +544,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             });
             dirty = true;
         }
+        if let Ok(result) = smart_receiver.try_recv() {
+            smart_switches = Some(result);
+            smart_busy = false;
+            dirty = true;
+        }
         if let Ok(result) = version_receiver.try_recv() {
             firmware_version = Some(result);
             dirty = true;
@@ -617,6 +631,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 energy: energy_chart.as_ref(),
                 diagnostics_message,
                 firmware_version: firmware_version.as_ref(),
+                smart_switches: smart_switches.as_ref(),
+                smart_busy,
                 history: heating_history.as_ref(),
                 ambient,
                 location_results: location_results.as_ref(),
@@ -685,6 +701,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::Theme(theme)) => next.theme = theme,
             Some(Action::Appearance(appearance)) => next.appearance = appearance,
             Some(Action::Language(language)) => next.language = language,
+            Some(action @ (Action::SmartHome | Action::SmartSwitch(_, _))) => {
+                if !smart_busy {
+                    let change = match action {
+                        Action::SmartSwitch(index, on) => smart_switches
+                            .as_ref()
+                            .and_then(|result: &Result<Vec<smart_home::Switch>, String>| {
+                                result.as_ref().ok()
+                            })
+                            .and_then(|rows| rows.get(index))
+                            .map(|switch| (switch.entity_id.clone(), on)),
+                        _ => None,
+                    };
+                    if matches!(action, Action::SmartHome) || change.is_some() {
+                        smart_busy = true;
+                        let sender = smart_sender.clone();
+                        std::thread::spawn(move || {
+                            let _ = sender.send(smart_home::selected(root, change));
+                        });
+                    }
+                }
+                persist = false;
+            }
             Some(Action::ResetPreferences) => {
                 if installing {
                     error = Some(

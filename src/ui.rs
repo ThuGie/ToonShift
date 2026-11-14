@@ -22,6 +22,7 @@ impl Rect {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
+    SmartHome,
     Home,
     Schedule,
     Store,
@@ -39,6 +40,9 @@ enum Page {
 
 #[derive(Clone, Copy)]
 pub enum Action {
+    SmartHome,
+    SmartSwitch(usize, bool),
+    SmartPage(usize),
     StoreFilter(bool),
     MeterSource(crate::plugins::Metric, usize),
     AutomaticMeter(crate::plugins::Metric),
@@ -169,6 +173,7 @@ fn palette(settings: &Settings, hour: u8) -> Palette {
 }
 
 pub struct Ui {
+    smart_page: usize,
     hardware: hardware::Controls,
     pub pixels: Vec<u32>,
     font: Font,
@@ -212,6 +217,7 @@ pub struct Ui {
 impl Ui {
     pub fn new() -> Self {
         Self {
+            smart_page: 0,
             hardware: Default::default(),
             pixels: vec![0; WIDTH * HEIGHT],
             font: Font::from_bytes(
@@ -465,6 +471,11 @@ impl Ui {
             self.repository = None;
         }
         match action {
+            Action::SmartHome => {
+                self.page = Page::SmartHome;
+                return Some(action);
+            }
+            Action::SmartPage(page) => self.smart_page = page,
             Action::StoreFilter(installed_only) => {
                 self.store_installed_only = installed_only;
                 self.offset = 0;
@@ -936,6 +947,7 @@ impl Ui {
         }
         self.text(900, 52, view.time, 24, p.muted, 992);
         match self.page {
+            Page::SmartHome => self.smart_home(view, &p),
             Page::Home => self.home(view, &p),
             Page::Schedule => self.schedule(view, &p),
             Page::Store => self.store(view, &p),
@@ -2261,6 +2273,9 @@ impl Ui {
                             .push((rect, Action::Energy(meter, crate::energy::Period::Day)));
                     }
                 }
+                if interactive && !editing && matches!(plugin.source, Source::SmartHome) {
+                    self.buttons.push((rect, Action::SmartHome));
+                }
             } else {
                 self.text(x + 16, y + 47, id, 20, muted, end);
                 self.text(x + 16, y + 113, "Unavailable", 23, ink, end);
@@ -3239,6 +3254,13 @@ impl Ui {
             Action::ExportDiagnostics,
         );
         self.button(
+            Rect(373, 511, 280, 48),
+            "Smart home",
+            p,
+            false,
+            Action::SmartHome,
+        );
+        self.button(
             Rect(669, 511, 323, 48),
             "Reset preferences",
             p,
@@ -3247,6 +3269,69 @@ impl Ui {
         );
         if let Some(message) = view.diagnostics_message.filter(|_| view.error.is_none()) {
             self.text(32, 581, message, 18, p.muted, 990);
+        }
+    }
+
+    fn smart_home(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 155, "Smart home", 30, p.text, 730);
+        if view.smart_busy {
+            self.text(56, 220, "Checking Home Assistant…", 22, p.muted, 960);
+            return;
+        }
+        self.button(
+            Rect(754, 116, 215, 45),
+            "Refresh",
+            p,
+            false,
+            Action::SmartHome,
+        );
+        match view.smart_switches {
+            Some(Ok(rows)) => {
+                let page = self.smart_page.min(rows.len().saturating_sub(1) / 4);
+                if rows.is_empty() {
+                    self.text(56, 220, "No selected switches found", 22, p.muted, 960);
+                }
+                for (row, switch) in rows.iter().skip(page * 4).take(4).enumerate() {
+                    let y = 180 + row * 68;
+                    self.raw_text(56, y + 32, switch.name(), 23, p.text, 575);
+                    let (label, state) = match switch.state.as_str() {
+                        "on" => ("On", Some(true)),
+                        "off" => ("Off", Some(false)),
+                        _ => ("Unavailable", None),
+                    };
+                    self.text(585, y + 32, label, 20, p.muted, 745);
+                    if let Some(on) = state {
+                        self.button(
+                            Rect(754, y, 215, 52),
+                            if on { "Switch off" } else { "Switch on" },
+                            p,
+                            on,
+                            Action::SmartSwitch(page * 4 + row, !on),
+                        );
+                    }
+                }
+                if page > 0 {
+                    self.button(
+                        Rect(56, 480, 170, 45),
+                        "Previous",
+                        p,
+                        false,
+                        Action::SmartPage(page - 1),
+                    );
+                }
+                if (page + 1) * 4 < rows.len() {
+                    self.button(
+                        Rect(799, 480, 170, 45),
+                        "Next",
+                        p,
+                        false,
+                        Action::SmartPage(page + 1),
+                    );
+                }
+            }
+            Some(Err(error)) => self.text(56, 220, error, 20, p.muted, 960),
+            None => {}
         }
     }
 
@@ -3424,6 +3509,8 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub smart_switches: Option<&'a Result<Vec<crate::smart_home::Switch>, String>>,
+    pub smart_busy: bool,
     pub firmware_version: Option<&'a Result<String, String>>,
     pub vacations: Option<&'a Result<Vec<crate::vacation::Vacation>, String>>,
     pub vacation_busy: bool,
@@ -3507,6 +3594,7 @@ fn temperature(value: Option<&str>) -> String {
 
 fn plugin_value(plugin: &Plugin, view: &View<'_>) -> String {
     match plugin.source {
+        Source::SmartHome => "Switches".into(),
         Source::BoxTalk => plugin.metric.map_or_else(
             || "Unavailable".into(),
             |metric| crate::telemetry::display(metric, view.telemetry),

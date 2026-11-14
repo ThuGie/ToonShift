@@ -17,6 +17,13 @@ impl Language {
             "Schedule" => "Schema",
             "Home" => "Thuis",
             "Energy" => "Energie",
+            "Smart home" => "Slim huis",
+            "Switches" => "Schakelaars",
+            "Checking Home Assistant…" => "Home Assistant controleren…",
+            "No selected switches found" => "Geen geselecteerde schakelaars gevonden",
+            "Configure Home Assistant over SSH first." => {
+                "Configureer Home Assistant eerst via SSH."
+            }
             "All widgets" => "Alle widgets",
             "On dashboard" => "Op dashboard",
             "No widgets on the dashboard" => "Geen widgets op het dashboard",
