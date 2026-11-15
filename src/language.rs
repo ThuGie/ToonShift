@@ -330,6 +330,22 @@ impl Language {
             "Chart" => "Grafiek",
             "Homepage layout" => "Startschermindeling",
             "Software updates" => "Software-updates",
+            "Remote access" => "Externe toegang",
+            "Remote access on" => "Externe toegang aan",
+            "Remote access off" => "Externe toegang uit",
+            "Compare the code with your phone." => "Vergelijk de code met je telefoon.",
+            "Allow control" => "Bediening toestaan",
+            "Scan with ToonShift Android" => "Scan met ToonShift Android",
+            "This code expires after two minutes." => "Deze code verloopt na twee minuten.",
+            "Pair phone" => "Telefoon koppelen",
+            "Choose the Toon's reserved LAN address" => {
+                "Kies het gereserveerde LAN-adres van de Toon"
+            }
+            "Changing address revokes paired phones." => {
+                "Een ander adres trekt bestaande koppelingen in."
+            }
+            "Paired phones" => "Gekoppelde telefoons",
+            "Revoke" => "Intrekken",
             "Heating behaviour" => "Verwarmingsgedrag",
             "Firmware control" => "Firmwareregeling",
             "Learn and advise" => "Leren en adviseren",
