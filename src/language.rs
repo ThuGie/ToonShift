@@ -327,6 +327,18 @@ impl Language {
             "Average per interval" => "Gemiddelde per interval",
             "Recorded total" => "Gemeten totaal",
             "Earlier" => "Eerder",
+            "Chart" => "Grafiek",
+            "Table" => "Tabel",
+            "Time range" => "Periode",
+            "Reading" => "Meetwaarde",
+            "Data quality" => "Gegevenskwaliteit",
+            "Partial" => "Onvolledig",
+            "Complete" => "Volledig",
+            "Newer" => "Nieuwer",
+            "Older" => "Ouder",
+            "Recording selected meter history. Usage needs two samples." => {
+                "Metergeschiedenis wordt opgeslagen. Verbruik vereist twee metingen."
+            }
             "Latest" => "Meest recent",
             "Incomplete readings" => "Onvolledige meetgegevens",
             "Add a GitHub catalog" => "GitHub-catalogus toevoegen",

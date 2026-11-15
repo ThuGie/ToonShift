@@ -152,6 +152,8 @@ pub enum Action {
     Language(crate::language::Language),
     Energy(crate::energy::Meter, crate::energy::Period),
     EnergyBucket(usize),
+    EnergyTable(bool),
+    EnergyRows(usize),
     EnergyRates,
     EditEnergyRate(crate::energy::Rate, Option<u32>),
     SaveEnergyRate(crate::energy::Rate),
@@ -254,6 +256,8 @@ pub struct Ui {
     vacation_remove: Option<usize>,
     energy: (crate::energy::Meter, crate::energy::Period),
     energy_bucket: Option<usize>,
+    energy_table: bool,
+    energy_page: usize,
     energy_rate: Option<crate::energy::Rate>,
     energy_rate_error: Option<&'static str>,
     language: crate::language::Language,
@@ -305,6 +309,8 @@ impl Ui {
                 crate::energy::Period::Day,
             ),
             energy_bucket: None,
+            energy_table: false,
+            energy_page: 0,
             energy_rate: None,
             energy_rate_error: None,
             language: Default::default(),
@@ -647,6 +653,7 @@ impl Ui {
             }
             Action::Energy(meter, period) => {
                 self.energy_bucket = None;
+                self.energy_page = 0;
                 self.page = Page::Energy;
                 self.energy = (meter, period);
                 self.wifi = None;
@@ -658,6 +665,8 @@ impl Ui {
             Action::EnergyBucket(index) => {
                 self.energy_bucket = (self.energy_bucket != Some(index)).then_some(index);
             }
+            Action::EnergyTable(table) => self.energy_table = table,
+            Action::EnergyRows(page) => self.energy_page = page,
             Action::RepositoryEntry => self.repository = Some(TextEntry::default()),
             Action::CloseRepository => self.repository = None,
             Action::Presets => {
@@ -2820,9 +2829,23 @@ impl Ui {
                 ),
                 17,
                 p.muted,
-                745,
+                292,
             );
         }
+        self.button(
+            Rect(305, 231, 111, 43),
+            "Chart",
+            p,
+            !self.energy_table,
+            Action::EnergyTable(false),
+        );
+        self.button(
+            Rect(425, 231, 111, 43),
+            "Table",
+            p,
+            self.energy_table,
+            Action::EnergyTable(true),
+        );
         let chart = match view.energy {
             Some(Ok(chart)) => chart,
             Some(Err(error)) => {
@@ -2835,6 +2858,10 @@ impl Ui {
             }
         };
         let values = || chart.bars.iter().copied().flatten();
+        if self.energy_table {
+            self.energy_table(chart, p);
+            return;
+        }
         if values().next().is_none() {
             self.text(
                 56,
@@ -2855,6 +2882,7 @@ impl Ui {
         }
         let min = values().fold(0.0, f64::min);
         let max = values().fold(0.0, f64::max);
+        let max = if min == max { 1.0 } else { max };
         let scale = (max - min).max(1e-6);
         let top = 303;
         let bottom = 490;
@@ -2863,6 +2891,17 @@ impl Ui {
         let zero = if min == max { bottom } else { plot_y(0.0) };
         let left = 161;
         let width = 797;
+        for step in 0..=4 {
+            let value = max - (max - min) * f64::from(step) / 4.0;
+            let y = plot_y(value);
+            self.panel(Rect(left, y, width, 1), p.raised, 0);
+            let label = if step == 0 {
+                format!("{value:.2} {}", chart.unit)
+            } else {
+                format!("{value:.2}")
+            };
+            self.raw_text(57, y + 5, &label, 16, p.muted, 156);
+        }
         self.panel(Rect(left, zero, width, 1), p.muted, 0);
         for (index, value) in chart.bars.iter().enumerate() {
             let x = left + index * width / chart.bars.len();
@@ -2891,22 +2930,6 @@ impl Ui {
                 );
             }
         }
-        self.text(
-            56,
-            318,
-            &format!("{max:.1} {}", chart.unit),
-            17,
-            p.muted,
-            155,
-        );
-        self.text(
-            56,
-            494,
-            &format!("{min:.1} {}", chart.unit),
-            17,
-            p.muted,
-            155,
-        );
         let summary = chart.total.map_or_else(
             || self.language.translate("Average per interval").to_owned(),
             |total| {
@@ -2959,20 +2982,14 @@ impl Ui {
                 ""
             };
             let (from, to) = chart.bucket_bounds(index);
-            let stamp = |seconds: u64| {
-                #[cfg(target_os = "linux")]
-                if let Some([_, month, day, hour, minute]) = i32::try_from(seconds)
-                    .ok()
-                    .and_then(crate::device::vacation_date)
-                {
-                    return format!("{day:02}/{month:02} {hour:02}:{minute:02}");
-                }
-                format!("{:02}:{:02}", seconds / 3600 % 24, seconds / 60 % 60)
-            };
             self.raw_text(
                 162,
                 521,
-                &format!("{} – {}   ·   {value}   {quality}", stamp(from), stamp(to)),
+                &format!(
+                    "{} – {}   ·   {value}   {quality}",
+                    energy_stamp(from),
+                    energy_stamp(to)
+                ),
                 17,
                 p.text,
                 852,
@@ -2987,6 +3004,68 @@ impl Ui {
                 855,
             );
         }
+    }
+
+    fn energy_table(&mut self, chart: &crate::energy::Chart, p: &Palette) {
+        let count = chart.bars.len();
+        let page = self.energy_page.min(count.saturating_sub(1) / 5);
+        self.text(56, 301, "Time range", 16, p.muted, 495);
+        self.text(503, 301, "Reading", 16, p.muted, 708);
+        self.text(741, 301, "Data quality", 16, p.muted, 961);
+        for (row, index) in (0..count).rev().skip(page * 5).take(5).enumerate() {
+            let y = 310 + row * 35;
+            if row % 2 == 0 {
+                self.panel(Rect(48, y, 920, 34), p.raised, 7);
+            }
+            let (from, to) = chart.bucket_bounds(index);
+            self.raw_text(
+                56,
+                y + 23,
+                &format!("{} – {}", energy_stamp(from), energy_stamp(to)),
+                17,
+                p.text,
+                485,
+            );
+            let (value, quality) = match chart.bars[index] {
+                Some(value) => (
+                    format!("{value:.2} {}", chart.unit),
+                    if chart.partial_bars[index] {
+                        "Partial"
+                    } else {
+                        "Complete"
+                    },
+                ),
+                None => ("—".into(), "No reading"),
+            };
+            self.raw_text(503, y + 23, &value, 18, p.text, 710);
+            self.text(741, y + 23, quality, 17, p.muted, 963);
+        }
+        if page > 0 {
+            self.button(
+                Rect(52, 492, 135, 42),
+                "Newer",
+                p,
+                false,
+                Action::EnergyRows(page - 1),
+            );
+        }
+        if (page + 1) * 5 < count {
+            self.button(
+                Rect(827, 492, 135, 42),
+                "Older",
+                p,
+                false,
+                Action::EnergyRows(page + 1),
+            );
+        }
+        self.raw_text(
+            437,
+            519,
+            &format!("{} / {}", page + 1, count.div_ceil(5).max(1)),
+            17,
+            p.muted,
+            590,
+        );
     }
 
     fn energy_rates(&mut self, view: &View<'_>, p: &Palette) {
@@ -3868,6 +3947,17 @@ struct TextEntry {
     text: String,
     symbols: bool,
     shift: bool,
+}
+
+fn energy_stamp(seconds: u64) -> String {
+    #[cfg(target_os = "linux")]
+    if let Some([_, month, day, hour, minute]) = i32::try_from(seconds)
+        .ok()
+        .and_then(crate::device::vacation_date)
+    {
+        return format!("{day:02}/{month:02} {hour:02}:{minute:02}");
+    }
+    format!("{:02}:{:02}", seconds / 3600 % 24, seconds / 60 % 60)
 }
 
 fn temperature(value: Option<&str>) -> String {
