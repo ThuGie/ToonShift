@@ -2,10 +2,12 @@ use crate::{api, thermostat::Work};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::ffi::CStr;
 use std::io::{self, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{mpsc::Sender, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -287,34 +289,50 @@ impl Remote {
     fn listen(self: Arc<Self>, commands: Sender<Work>, events: Arc<api::Events>) {
         let clients = Arc::new(api::Slots::new(8));
         let streams = Arc::new(api::Slots::new(3));
-        let mut active: Option<(u64, TcpListener, Arc<rustls::ServerConfig>)> = None;
+        LanFirewall::clear();
+        let mut active: Option<(u64, TcpListener, Arc<rustls::ServerConfig>, LanFirewall)> = None;
+        let mut firewall_check = Instant::now();
         loop {
             let next = {
                 let state = self.state.lock().unwrap();
                 (state.enabled
                     && active
                         .as_ref()
-                        .is_none_or(|(generation, _, _)| *generation != state.generation))
+                        .is_none_or(|(generation, _, _, _)| *generation != state.generation))
                 .then(|| (state.generation, state.identity.clone()))
                 .filter(|(_, id)| id.is_some())
             };
             if let Some((generation, Some(identity))) = next {
                 active = None;
+                let address = identity.address;
                 if let Ok((listener, tls)) = bind(identity) {
+                    let Ok(firewall) = LanFirewall::open(address) else {
+                        std::thread::sleep(Duration::from_secs(2));
+                        continue;
+                    };
                     let mut state = self.state.lock().unwrap();
                     if state.enabled && state.generation == generation {
                         state.listening = true;
-                        active = Some((generation, listener, tls));
+                        active = Some((generation, listener, tls, firewall));
+                        firewall_check = Instant::now() + Duration::from_secs(15);
                     }
                 }
             }
-            let Some((generation, listener, tls)) = &active else {
+            let Some((generation, listener, tls, _)) = &active else {
                 std::thread::sleep(Duration::from_secs(2));
                 continue;
             };
             if !self.current(*generation) {
                 active = None;
                 continue;
+            }
+            if Instant::now() >= firewall_check {
+                firewall_check = Instant::now() + Duration::from_secs(15);
+                if !LanFirewall::rule(&["-C", "HCB-INPUT", "-j", LanFirewall::CHAIN]) {
+                    self.state.lock().unwrap().listening = false;
+                    active = None;
+                    continue;
+                }
             }
             match listener.accept() {
                 Ok((socket, _)) => {
@@ -413,6 +431,24 @@ impl Remote {
 }
 
 fn addresses() -> Vec<Ipv4Addr> {
+    lans().into_iter().map(|lan| lan.address).collect()
+}
+
+struct Lan {
+    address: Ipv4Addr,
+    interface: String,
+    subnet: String,
+}
+
+fn private_subnet(address: Ipv4Addr, mask: u32) -> Option<String> {
+    let prefix = mask.count_ones();
+    let network = Ipv4Addr::from(u32::from(address) & mask);
+    let last = Ipv4Addr::from(u32::from(address) | !mask);
+    (prefix > 0 && (u32::MAX << (32 - prefix)) == mask && network.is_private() && last.is_private())
+        .then(|| format!("{network}/{prefix}"))
+}
+
+fn lans() -> Vec<Lan> {
     let mut first = std::ptr::null_mut();
     if unsafe { libc::getifaddrs(&mut first) } != 0 {
         return Vec::new();
@@ -421,21 +457,89 @@ fn addresses() -> Vec<Ipv4Addr> {
     let mut current = first;
     while let Some(interface) = unsafe { current.as_ref() } {
         if !interface.ifa_addr.is_null()
+            && !interface.ifa_netmask.is_null()
             && unsafe { (*interface.ifa_addr).sa_family as i32 } == libc::AF_INET
         {
             let socket = unsafe { &*(interface.ifa_addr.cast::<libc::sockaddr_in>()) };
             let address = Ipv4Addr::from(socket.sin_addr.s_addr.to_ne_bytes());
-            if address.is_private()
-                && interface.ifa_flags & libc::IFF_UP as u32 != 0
-                && !values.contains(&address)
+            let mask = unsafe { &*(interface.ifa_netmask.cast::<libc::sockaddr_in>()) };
+            let name = unsafe { CStr::from_ptr(interface.ifa_name) }.to_string_lossy();
+            if interface.ifa_flags & libc::IFF_UP as u32 != 0
+                && ["wlan", "eth", "en"]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
             {
-                values.push(address);
+                if let Some(subnet) = private_subnet(address, u32::from_be(mask.sin_addr.s_addr)) {
+                    values.push(Lan {
+                        address,
+                        interface: name.into_owned(),
+                        subnet,
+                    });
+                }
             }
         }
         current = interface.ifa_next;
     }
     unsafe { libc::freeifaddrs(first) };
     values
+}
+
+struct LanFirewall;
+
+impl LanFirewall {
+    const CHAIN: &str = "TOONSHIFT-REMOTE";
+
+    fn rule(args: &[&str]) -> bool {
+        Command::new("/usr/sbin/iptables")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn clear() {
+        let _ = Self::rule(&["-D", "HCB-INPUT", "-j", Self::CHAIN]);
+        let _ = Self::rule(&["-F", Self::CHAIN]);
+        let _ = Self::rule(&["-X", Self::CHAIN]);
+    }
+
+    fn open(address: Ipv4Addr) -> io::Result<Self> {
+        let lan = lans()
+            .into_iter()
+            .find(|lan| lan.address == address)
+            .ok_or_else(|| io::Error::other("Selected LAN address is unavailable"))?;
+        Self::clear();
+        let lease = Self;
+        if Self::rule(&["-N", Self::CHAIN])
+            && Self::rule(&[
+                "-A",
+                Self::CHAIN,
+                "-i",
+                &lan.interface,
+                "-s",
+                &lan.subnet,
+                "-d",
+                &address.to_string(),
+                "-p",
+                "tcp",
+                "--dport",
+                &PORT.to_string(),
+                "-j",
+                "ACCEPT",
+            ])
+            && Self::rule(&["-I", "HCB-INPUT", "1", "-j", Self::CHAIN])
+        {
+            return Ok(lease);
+        }
+        Err(io::Error::other("Could not enable the LAN firewall rule"))
+    }
+}
+
+impl Drop for LanFirewall {
+    fn drop(&mut self) {
+        Self::clear();
+    }
 }
 
 fn bind(
@@ -483,6 +587,17 @@ fn allowed(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lan_firewall_rejects_public_ranges_and_noncontiguous_masks() {
+        assert_eq!(
+            private_subnet("192.168.137.88".parse().unwrap(), 0xffffff00).as_deref(),
+            Some("192.168.137.0/24")
+        );
+        assert!(private_subnet("192.168.137.88".parse().unwrap(), 0xffff00ff).is_none());
+        assert!(private_subnet("192.168.137.88".parse().unwrap(), 0xff000000).is_none());
+        assert!(private_subnet("10.0.0.2".parse().unwrap(), 0).is_none());
+    }
 
     #[test]
     fn paired_verifier_requires_approval_and_fails_after_revocation() {
