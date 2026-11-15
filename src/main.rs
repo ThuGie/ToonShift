@@ -687,7 +687,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             location_results = Some(result);
             dirty = true;
         }
-        let idle = settings.idle_minutes > 0
+        let idle = !joining
+            && settings.idle_minutes > 0
             && last_touch.elapsed() >= Duration::from_secs(u64::from(settings.idle_minutes) * 60);
         if ambient != idle {
             ambient = idle;
@@ -1524,8 +1525,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::JoinNetwork) => {
                 if let Some(form) = (!joining && !scanning).then(|| ui.wifi_request()).flatten() {
                     joining = true;
-                    network_message = Some("Applying Wi-Fi settings…".into());
+                    network_stage = Some(network::WifiStage::Saving);
+                    network_result = None;
                     let sender = join_sender.clone();
+                    let progress = wifi_progress_sender.clone();
                     std::thread::spawn(move || {
                         let _ = sender.send((
                             network::join(form, |stage| {
@@ -1541,7 +1544,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::ReconnectWifi) => {
                 if !joining && !scanning {
                     joining = true;
-                    network_message = Some("Reconnecting to saved Wi-Fi…".into());
+                    network_stage = Some(network::WifiStage::Reconnecting);
+                    network_result = None;
                     let sender = join_sender.clone();
                     std::thread::spawn(move || {
                         let _ = sender.send((

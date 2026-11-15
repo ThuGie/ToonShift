@@ -123,6 +123,12 @@ impl Language {
             "No IP address assigned. Previous Wi-Fi restored." => {
                 "Geen IP-adres gekregen. Vorig wifi-netwerk hersteld."
             }
+            "Could not confirm the new settings. Previous Wi-Fi restored." => {
+                "Nieuwe instellingen niet bevestigd. Vorig wifi-netwerk hersteld."
+            }
+            "Could not confirm that the new Wi-Fi settings were saved." => {
+                "Opslaan van de nieuwe wifi-instellingen is niet bevestigd."
+            }
             "Could not join. Previous Wi-Fi restored. Check the password and signal." => {
                 "Verbinden mislukt. Vorige wifi hersteld. Controleer wachtwoord en signaal."
             }
