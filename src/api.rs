@@ -118,7 +118,7 @@ impl Slots {
     fn take(self: &Arc<Self>) -> Option<Slot> {
         use std::sync::atomic::Ordering::Relaxed;
         self.0
-            .try_update(Relaxed, Relaxed, |count| count.checked_sub(1))
+            .fetch_update(Relaxed, Relaxed, |count| count.checked_sub(1))
             .ok()?;
         Some(Slot(self.clone()))
     }
