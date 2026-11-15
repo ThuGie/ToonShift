@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 mod hardware;
+mod home_layout;
 pub use hardware::HardwareAction;
 
 pub const WIDTH: usize = 1024;
@@ -35,6 +36,7 @@ enum Page {
     EnergyRates,
     HeatingDetails,
     Display,
+    HomeLayouts,
     Advanced,
 }
 
@@ -163,6 +165,8 @@ pub enum Action {
     ResetPreferences,
     HeatingDetails,
     Display,
+    HomeLayouts,
+    HomeLayout(crate::plugins::HomeLayout),
     Brightness(bool, i8),
     AppearanceHour(bool, i8),
     IdleMinutes(u8),
@@ -643,6 +647,7 @@ impl Ui {
                 return Some(action);
             }
             Action::Display => self.page = Page::Display,
+            Action::HomeLayouts => self.page = Page::HomeLayouts,
             Action::HeatingDetails => {
                 self.page = Page::HeatingDetails;
                 self.wifi = None;
@@ -1063,6 +1068,7 @@ impl Ui {
             Page::EnergyRates => self.energy_rates(view, &p),
             Page::HeatingDetails => self.heating_details(view, &p),
             Page::Display => self.display_settings(view, &p),
+            Page::HomeLayouts => self.home_layout_settings(view, &p),
             Page::Advanced => self.hardware_screen(view, &p),
         }
         if let Some(error) = view.error {
@@ -2158,6 +2164,10 @@ impl Ui {
     }
 
     fn home(&mut self, view: &View<'_>, p: &Palette) {
+        if view.settings.home_layout != crate::plugins::HomeLayout::Dashboard {
+            self.alternate_home(view, p);
+            return;
+        }
         if self.naming_dashboard {
             self.dashboard_name_editor(p);
             return;
@@ -3701,6 +3711,13 @@ impl Ui {
     fn display_settings(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 960, 448), p.card, 26);
         self.text(56, 152, "Display", 30, p.text, 960);
+        self.button(
+            Rect(664, 114, 288, 52),
+            "Homepage layout",
+            p,
+            false,
+            Action::HomeLayouts,
+        );
         for (night, x, brightness, hour) in [
             (
                 false,
@@ -3872,6 +3889,8 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub home_usage: Option<&'a [Result<crate::energy::Chart, String>; 2]>,
+    pub weekday: usize,
     pub boiler_protocol: Option<bool>,
     pub boiler_module: Option<bool>,
     pub firmware_version: Option<&'a Result<String, String>>,

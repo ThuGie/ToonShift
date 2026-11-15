@@ -269,6 +269,17 @@ pub fn vacation_date(seconds: i32) -> Option<[i32; 5]> {
     }
 }
 
+pub fn weekday() -> usize {
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut local: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut local).is_null() {
+            return 0;
+        }
+        local.tm_wday as usize
+    }
+}
+
 pub fn vacation_timestamp(date: [i32; 5]) -> Option<i32> {
     let [year, month, day, hour, minute] = date;
     if !(1970..=2038).contains(&year)

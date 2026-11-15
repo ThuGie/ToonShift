@@ -801,6 +801,7 @@ pub enum Appearance {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
+    pub home_layout: HomeLayout,
     pub meter_sources: crate::advanced::MeterSources,
     pub energy_rates: crate::energy::Rates,
     pub theme: Theme,
@@ -822,6 +823,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            home_layout: HomeLayout::Dashboard,
             theme: Theme::Midnight,
             meter_sources: Default::default(),
             energy_rates: Default::default(),
@@ -838,6 +840,46 @@ impl Default for Settings {
             night_brightness: 30,
             idle_minutes: 0,
             idle_dashboard_page: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HomeLayout {
+    #[default]
+    Dashboard,
+    Minimal,
+    LiveMeters,
+    Usage,
+    Schedule,
+    Weather,
+    WideControls,
+    SidePanel,
+}
+
+impl HomeLayout {
+    pub const ALL: [Self; 8] = [
+        Self::Minimal,
+        Self::LiveMeters,
+        Self::Usage,
+        Self::Schedule,
+        Self::Weather,
+        Self::WideControls,
+        Self::SidePanel,
+        Self::Dashboard,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Dashboard => "Tile dashboard",
+            Self::Minimal => "Minimal",
+            Self::LiveMeters => "Live meters",
+            Self::Usage => "Electricity and gas charts",
+            Self::Schedule => "Schedule",
+            Self::Weather => "Weather",
+            Self::WideControls => "Wide controls",
+            Self::SidePanel => "Side panel",
         }
     }
 }

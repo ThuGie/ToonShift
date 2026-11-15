@@ -115,6 +115,8 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         ot_comm_error: "0".into(),
     };
     let view = ui::View {
+        home_usage: None,
+        weekday: 0,
         hardware: None,
         settings: &settings,
         plugins: &plugins,
@@ -388,6 +390,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut selected_energy = None;
     let mut next_energy_refresh = std::time::Instant::now();
     let mut energy_chart = None;
+    let (home_usage_sender, home_usage_results) = std::sync::mpsc::channel();
+    let mut home_usage = None;
+    let mut home_usage_busy = false;
+    let mut home_usage_due = std::time::Instant::now();
+    let mut home_schedule_due = std::time::Instant::now();
     let (history_sender, history_receiver) = std::sync::mpsc::channel();
     let mut heating_history = None;
     let mut loading_history = false;
@@ -539,6 +546,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = energy_requests.send(selection);
             }
         }
+        if let Ok((sources, result)) = home_usage_results.try_recv() {
+            home_usage_busy = false;
+            if sources == settings.meter_sources {
+                home_usage = Some(result);
+                dirty = true;
+            } else {
+                home_usage_due = std::time::Instant::now();
+            }
+        }
+        if !ambient && ui.showing_home() {
+            let now = std::time::Instant::now();
+            match settings.home_layout {
+                plugins::HomeLayout::Usage if !home_usage_busy && now >= home_usage_due => {
+                    home_usage_busy = true;
+                    home_usage_due = now + Duration::from_secs(45);
+                    let sources = settings.meter_sources.clone();
+                    let sender = home_usage_sender.clone();
+                    std::thread::spawn(move || {
+                        let charts =
+                            [energy::Meter::Electricity, energy::Meter::Gas].map(|meter| {
+                                let source = meter
+                                    .selected_metric()
+                                    .and_then(|metric| sources.get(&metric));
+                                energy::load_selected(
+                                    root,
+                                    meter,
+                                    energy::Period::Day,
+                                    source.map(String::as_str),
+                                )
+                            });
+                        let _ = sender.send((sources, charts));
+                    });
+                }
+                plugins::HomeLayout::Schedule if now >= home_schedule_due => {
+                    home_schedule_due = now + Duration::from_secs(60);
+                    let _ = commands.send(thermostat::Work::from_ui(thermostat::Command::Schedule));
+                }
+                _ => {}
+            }
+        }
         if let Ok(result) = catalog_receiver.try_recv() {
             catalog_busy = false;
             catalog_message = Some(match result {
@@ -678,6 +725,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ui.draw(&ui::View {
+                home_usage: home_usage.as_ref(),
+                weekday: device::weekday(),
                 hardware: Some(&hardware),
                 settings: &settings,
                 plugins: &catalog,
@@ -797,6 +846,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(Action::Theme(theme)) => next.theme = theme,
             Some(Action::Appearance(appearance)) => next.appearance = appearance,
+            Some(Action::HomeLayout(layout)) => {
+                next.home_layout = layout;
+                home_usage_due = std::time::Instant::now();
+                home_schedule_due = std::time::Instant::now();
+            }
             Some(Action::Language(language)) => next.language = language,
             Some(Action::ResetPreferences) => {
                 if installing {
@@ -1235,6 +1289,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if persist {
             match next.save(root) {
                 Ok(()) => {
+                    if settings.meter_sources != next.meter_sources {
+                        home_usage = None;
+                        home_usage_due = std::time::Instant::now();
+                    }
                     if matches!(action, Some(Action::ResetPreferences)) {
                         for metric in settings.meter_sources.keys() {
                             telemetry.remove(metric);
