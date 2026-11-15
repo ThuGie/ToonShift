@@ -801,6 +801,7 @@ pub enum Appearance {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
+    pub remote_access: bool,
     pub heating_advice: bool,
     pub automatic_updates: bool,
     pub home_layout: HomeLayout,
@@ -825,6 +826,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            remote_access: false,
             heating_advice: true,
             automatic_updates: true,
             home_layout: HomeLayout::Dashboard,

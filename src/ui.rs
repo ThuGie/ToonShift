@@ -39,6 +39,7 @@ enum Page {
     HomeLayouts,
     SoftwareUpdates,
     HeatingBehaviour,
+    RemoteAccess,
     Advanced,
 }
 
@@ -173,6 +174,13 @@ pub enum Action {
     HeatingBehaviour,
     HeatingAdvice(bool),
     ResetHeatingLearning,
+    RemoteAccess,
+    RemoteEnable(bool),
+    RemoteAddress(std::net::Ipv4Addr),
+    RemotePair,
+    RemoteCancel,
+    RemoteApprove,
+    RemoteRevoke(usize),
     CheckUpdates,
     InstallUpdate,
     RestoreUpdate,
@@ -660,6 +668,10 @@ impl Ui {
             Action::HomeLayouts => self.page = Page::HomeLayouts,
             Action::SoftwareUpdates => self.page = Page::SoftwareUpdates,
             Action::HeatingBehaviour => self.page = Page::HeatingBehaviour,
+            Action::RemoteAccess => {
+                self.page = Page::RemoteAccess;
+                return Some(action);
+            }
             Action::HeatingDetails => {
                 self.page = Page::HeatingDetails;
                 self.wifi = None;
@@ -1083,6 +1095,7 @@ impl Ui {
             Page::HomeLayouts => self.home_layout_settings(view, &p),
             Page::SoftwareUpdates => self.software_updates(view, &p),
             Page::HeatingBehaviour => self.heating_behaviour(view, &p),
+            Page::RemoteAccess => self.remote_access(view, &p),
             Page::Advanced => self.hardware_screen(view, &p),
         }
         if let Some(error) = view.error {
@@ -3688,13 +3701,20 @@ impl Ui {
             false,
             Action::Stock,
         );
-        self.button(Rect(380, 428, 214, 54), "Wi-Fi", p, false, Action::Network);
+        self.button(Rect(380, 428, 151, 54), "Wi-Fi", p, false, Action::Network);
         self.button(
-            Rect(612, 428, 225, 54),
+            Rect(547, 428, 170, 54),
             "Display",
             p,
             false,
             Action::Display,
+        );
+        self.button(
+            Rect(733, 428, 231, 54),
+            "Remote access",
+            p,
+            false,
+            Action::RemoteAccess,
         );
         self.button(
             Rect(640, 347, 324, 60),
@@ -3884,6 +3904,158 @@ impl Ui {
             || self.reset_preferences
             || self.stock_confirm
             || self.resetting_dashboard
+    }
+
+    pub fn showing_remote(&self) -> bool {
+        self.page == Page::RemoteAccess
+    }
+
+    fn remote_access(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(55, 152, "Remote access", 30, p.text, 724);
+        self.button(
+            Rect(766, 113, 196, 49),
+            "Settings",
+            p,
+            false,
+            Action::Settings,
+        );
+        let Some(remote) = view.remote else { return };
+        if let Some((name, code)) = &remote.approval {
+            self.text(
+                56,
+                219,
+                "Compare the code with your phone.",
+                24,
+                p.text,
+                968,
+            );
+            self.raw_text(56, 275, name, 30, p.text, 963);
+            self.raw_text(56, 375, code, 65, p.accent, 965);
+            self.button(
+                Rect(56, 463, 249, 55),
+                "Cancel",
+                p,
+                false,
+                Action::RemoteCancel,
+            );
+            self.button(
+                Rect(706, 463, 256, 55),
+                "Allow control",
+                p,
+                true,
+                Action::RemoteApprove,
+            );
+            return;
+        }
+        if let Some(payload) = &remote.qr {
+            if let Ok(code) = qrcode::QrCode::new(payload.as_bytes()) {
+                let scale = (318 / (code.width() + 8)).max(1);
+                let outer = (code.width() + 8) * scale;
+                self.panel(Rect(56, 179, outer, outer), 0xffffff, 0);
+                for (i, color) in code.to_colors().into_iter().enumerate() {
+                    if color == qrcode::Color::Dark {
+                        self.panel(
+                            Rect(
+                                56 + (i % code.width() + 4) * scale,
+                                179 + (i / code.width() + 4) * scale,
+                                scale,
+                                scale,
+                            ),
+                            0,
+                            0,
+                        );
+                    }
+                }
+                self.text(399, 221, "Scan with ToonShift Android", 25, p.text, 964);
+                self.text(
+                    399,
+                    267,
+                    "This code expires after two minutes.",
+                    19,
+                    p.muted,
+                    964,
+                );
+                self.button(
+                    Rect(399, 410, 224, 54),
+                    "Cancel",
+                    p,
+                    false,
+                    Action::RemoteCancel,
+                );
+                return;
+            }
+        }
+        self.button(
+            Rect(56, 178, 305, 48),
+            if remote.enabled {
+                "Remote access on"
+            } else {
+                "Remote access off"
+            },
+            p,
+            remote.enabled,
+            Action::RemoteEnable(!remote.enabled),
+        );
+        if let Some(ip) = remote.address {
+            self.raw_text(387, 209, &format!("{ip}:10083"), 21, p.text, 714);
+        }
+        if remote.listening {
+            self.button(
+                Rect(766, 178, 196, 48),
+                "Pair phone",
+                p,
+                true,
+                Action::RemotePair,
+            );
+        }
+        if !remote.listening || !remote.enabled {
+            self.text(
+                56,
+                261,
+                "Choose the Toon's reserved LAN address",
+                19,
+                p.muted,
+                963,
+            );
+            for (i, &address) in remote.addresses.iter().take(3).enumerate() {
+                self.button(
+                    Rect(56 + i * 306, 272, 287, 47),
+                    &address.to_string(),
+                    p,
+                    remote.address == Some(address),
+                    Action::RemoteAddress(address),
+                );
+            }
+            self.text(
+                56,
+                346,
+                "Changing address revokes paired phones.",
+                17,
+                p.muted,
+                963,
+            );
+        }
+        self.text(
+            56,
+            if remote.listening { 264 } else { 377 },
+            "Paired phones",
+            20,
+            p.muted,
+            965,
+        );
+        for (i, (_, name)) in remote.phones.iter().take(8).enumerate() {
+            let x = 56 + (i % 2) * 460;
+            let y = (if remote.listening { 278 } else { 388 }) + (i / 2) * 36;
+            self.raw_text(x, y + 24, name, 17, p.text, x + 295);
+            self.button(
+                Rect(x + 309, y + 1, 127, 32),
+                "Revoke",
+                p,
+                false,
+                Action::RemoteRevoke(i),
+            );
+        }
     }
 
     fn heating_behaviour(&mut self, view: &View<'_>, p: &Palette) {
@@ -4108,6 +4280,7 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub remote: Option<&'a RemoteView>,
     pub heating_behaviour: Option<&'a crate::heating_behaviour::Summary>,
     pub updates: Option<&'a SoftwareUpdates>,
     pub home_usage: Option<&'a [Result<crate::energy::Chart, String>; 2]>,
@@ -4141,6 +4314,17 @@ pub struct View<'a> {
     pub history: Option<&'a Result<crate::thermostat::History, String>>,
     pub ambient: bool,
     pub location_results: Option<&'a Result<Vec<crate::plugins::Place>, String>>,
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub struct RemoteView {
+    pub enabled: bool,
+    pub listening: bool,
+    pub address: Option<std::net::Ipv4Addr>,
+    pub addresses: Vec<std::net::Ipv4Addr>,
+    pub qr: Option<String>,
+    pub approval: Option<(String, String)>,
+    pub phones: Vec<(String, String)>,
 }
 
 struct VacationEditor {

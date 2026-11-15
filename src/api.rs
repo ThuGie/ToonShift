@@ -108,14 +108,14 @@ pub fn start(root: &Path, commands: Sender<Work>, events: Arc<Events>) -> io::Re
     Ok(())
 }
 
-struct Slots(std::sync::atomic::AtomicUsize);
+pub(crate) struct Slots(std::sync::atomic::AtomicUsize);
 
 impl Slots {
-    fn new(count: usize) -> Self {
+    pub(crate) fn new(count: usize) -> Self {
         Self(std::sync::atomic::AtomicUsize::new(count))
     }
 
-    fn take(self: &Arc<Self>) -> Option<Slot> {
+    pub(crate) fn take(self: &Arc<Self>) -> Option<Slot> {
         use std::sync::atomic::Ordering::Relaxed;
         self.0
             .fetch_update(Relaxed, Relaxed, |count| count.checked_sub(1))
@@ -124,7 +124,7 @@ impl Slots {
     }
 }
 
-struct Slot(Arc<Slots>);
+pub(crate) struct Slot(Arc<Slots>);
 
 impl Drop for Slot {
     fn drop(&mut self) {
@@ -159,7 +159,7 @@ fn load_token(root: &Path) -> io::Result<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn random_token() -> io::Result<String> {
+pub(crate) fn random_token() -> io::Result<String> {
     let mut random = [0u8; 32];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
@@ -274,7 +274,7 @@ fn read_client(path: &std::path::Path) -> Option<(Grant, String)> {
     Some((grant, secret.into()))
 }
 
-fn equal_secret(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn equal_secret(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len()
         && left
             .iter()
@@ -289,7 +289,7 @@ struct Credentials {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Grant {
+pub(crate) enum Grant {
     Read,
     Control,
 }
@@ -348,14 +348,14 @@ fn serve(
     send_json(stream, status, response)
 }
 
-fn send_json(stream: &mut TcpStream, status: &str, response: Value) -> io::Result<()> {
+pub(crate) fn send_json(stream: &mut impl Write, status: &str, response: Value) -> io::Result<()> {
     let body = response.to_string();
     write!(stream,
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()
     )
 }
 
-fn stream_events(
+pub(crate) fn stream_events(
     stream: &mut impl Write,
     events: &Events,
     telemetry: bool,
@@ -417,6 +417,22 @@ fn handle(
     commands: &Sender<Work>,
     events: &Events,
 ) -> io::Result<(&'static str, Value)> {
+    handle_with(
+        request,
+        |token| credentials.grant(token),
+        |_, _, _, _| None,
+        commands,
+        events,
+    )
+}
+
+pub(crate) fn handle_with(
+    request: &mut impl BufRead,
+    authorize: impl Fn(&str) -> Option<Grant>,
+    intercept: impl Fn(&str, &str, &str, &[u8]) -> Option<(&'static str, Value)>,
+    commands: &Sender<Work>,
+    events: &Events,
+) -> io::Result<(&'static str, Value)> {
     let bad_request = || ("400 Bad Request", json!({"error":"Invalid HTTP request"}));
     let mut headers = String::new();
     let mut line = String::new();
@@ -462,7 +478,12 @@ fn handle(
     let token = authorization
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or_default();
-    let Some(grant) = credentials.grant(token) else {
+    let mut body = vec![0; size.unwrap_or_default()];
+    request.read_exact(&mut body)?;
+    if let Some(response) = intercept(method, path, token, &body) {
+        return Ok(response);
+    }
+    let Some(grant) = authorize(token) else {
         return Ok(("401 Unauthorized", json!({"error":"Bearer token required"})));
     };
     if grant == Grant::Read && method != "GET" {
@@ -471,8 +492,6 @@ fn handle(
             json!({"error":"Control permission required"}),
         ));
     }
-    let mut body = vec![0; size.unwrap_or_default()];
-    request.read_exact(&mut body)?;
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
     match (method, route) {
         ("GET", "/v1/vacations") => Ok(read_result(crate::vacation::load())),

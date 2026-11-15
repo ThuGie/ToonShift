@@ -12,6 +12,8 @@ env:
   TOOLCHAIN: '1.93.0'
   TARGET: armv7-unknown-linux-musleabihf
   TOONSHIFT_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  CC_armv7_unknown_linux_musleabihf: arm-linux-gnueabihf-gcc
+  AR_armv7_unknown_linux_musleabihf: arm-linux-gnueabihf-ar
 
 jobs:
   build:
@@ -29,7 +31,10 @@ jobs:
           [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           python3 -c 'import os,tomllib; assert "v"+tomllib.load(open("Cargo.toml","rb"))["package"]["version"] == os.environ["GITHUB_REF_NAME"]'
       - name: Set up Rust
-        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt,clippy --target "$TARGET"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt,clippy --target "$TARGET"
       - name: Check and test
         run: |
           cargo +"$TOOLCHAIN" fmt --all --check

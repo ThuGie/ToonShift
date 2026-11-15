@@ -22,6 +22,8 @@ mod vacation;
 mod api;
 #[cfg(target_os = "linux")]
 mod device;
+#[cfg(target_os = "linux")]
+mod remote;
 
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
@@ -130,6 +132,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         ot_comm_error: "0".into(),
     };
     let view = ui::View {
+        remote: None,
         heating_behaviour: None,
         updates: None,
         home_usage: None,
@@ -334,6 +337,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     heating_inputs.lock().unwrap().enabled = settings.heating_advice;
     let (commands, updates) = thermostat::worker(root.to_owned(), heating_inputs.clone());
     let api_events = std::sync::Arc::new(api::Events::default());
+    let remote = remote::Remote::start(
+        root,
+        commands.clone(),
+        api_events.clone(),
+        settings.remote_access,
+    );
+    let mut remote_view = ui::RemoteView::default();
+    let mut remote_refresh = std::time::Instant::now();
     if let Err(error) = api::start(root, commands.clone(), api_events.clone()) {
         eprintln!("ToonShift API unavailable: {error}");
     }
@@ -460,6 +471,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut feed_poll = std::time::Instant::now();
     let mut hardware = advanced::State::new();
     loop {
+        if ui.showing_remote() && std::time::Instant::now() >= remote_refresh {
+            remote_refresh = std::time::Instant::now() + Duration::from_secs(1);
+            let next = remote.view();
+            dirty |= next != remote_view;
+            remote_view = next;
+        }
         if let Ok(result) = update_receiver.try_recv() {
             update_view.checking = false;
             update_view.last_check = Some(device::time().1);
@@ -833,6 +850,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ui.draw(&ui::View {
+                remote: Some(&remote_view),
                 heating_behaviour: Some(&heating_behaviour),
                 updates: Some(&update_view),
                 home_usage: home_usage.as_ref(),
@@ -896,6 +914,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             settings.tiles_per_page(),
         );
         match action {
+            Some(Action::RemoteAccess) => {
+                remote_refresh = std::time::Instant::now();
+                persist = false;
+            }
+            Some(Action::RemoteEnable(enabled)) => next.remote_access = enabled,
+            Some(
+                action @ (Action::RemoteAddress(_)
+                | Action::RemotePair
+                | Action::RemoteCancel
+                | Action::RemoteApprove
+                | Action::RemoteRevoke(_)),
+            ) => {
+                let result = match action {
+                    Action::RemoteAddress(address) => remote.configure(address),
+                    Action::RemotePair => remote.pair(),
+                    Action::RemoteCancel => {
+                        remote.cancel();
+                        Ok(())
+                    }
+                    Action::RemoteApprove => remote.approve(),
+                    Action::RemoteRevoke(index) => remote_view.phones.get(index).map_or_else(
+                        || Err("Phone no longer present".into()),
+                        |(id, _)| remote.revoke(id),
+                    ),
+                    _ => unreachable!(),
+                };
+                error = result.err();
+                remote_refresh = std::time::Instant::now();
+                persist = false;
+            }
             Some(Action::CheckUpdates) => {
                 update_manual_check = true;
                 persist = false;
@@ -1428,6 +1476,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if persist {
             match next.save(root) {
                 Ok(()) => {
+                    remote.enable(next.remote_access);
+                    if next.remote_access != settings.remote_access {
+                        remote_refresh = std::time::Instant::now();
+                    }
                     {
                         let mut inputs = heating_inputs.lock().unwrap();
                         inputs.enabled = next.heating_advice;
