@@ -7,12 +7,13 @@ use std::io::Read;
 use std::path::Path;
 mod hardware;
 mod home_layout;
+mod wifi;
 pub use hardware::HardwareAction;
 
 pub const WIDTH: usize = 1024;
 pub const HEIGHT: usize = 600;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Rect(usize, usize, usize, usize);
 
 impl Rect {
@@ -125,6 +126,9 @@ pub enum Action {
     HiddenNetwork,
     CloseNetworkForm,
     NetworkField(bool),
+    ShowWifiPassword,
+    HiddenWifiSecurity,
+    AutomaticWifi,
     StaticWifi(bool),
     StaticWifiField(usize),
     Key(char),
@@ -267,6 +271,7 @@ pub struct Ui {
     open_plugin: usize,
     plugin_settings: bool,
     wifi: Option<WifiForm>,
+    wifi_key_flash: Option<(Rect, std::time::Instant)>,
     repository: Option<TextEntry>,
     source_list: bool,
     source_offset: usize,
@@ -317,6 +322,7 @@ impl Ui {
             open_plugin: 0,
             plugin_settings: false,
             wifi: None,
+            wifi_key_flash: None,
             repository: None,
             source_list: false,
             source_offset: 0,
@@ -487,7 +493,9 @@ impl Ui {
         selected: bool,
         action: Action,
     ) {
-        let (background, ink) = if selected {
+        let pressed =
+            self.page == Page::Network && self.wifi_key_flash.is_some_and(|(key, _)| rect == key);
+        let (background, ink) = if pressed || selected {
             (palette.accent, palette.on_accent)
         } else {
             (palette.raised, palette.text)
@@ -524,12 +532,30 @@ impl Ui {
     }
 
     pub fn hit(&mut self, x: usize, y: usize) -> Option<Action> {
-        let action = self
+        let &(rect, action) = self
             .buttons
             .iter()
             .rev()
-            .find(|(rect, _)| rect.contains(x, y))?
-            .1;
+            .find(|(rect, _)| rect.contains(x, y))?;
+        if self.page == Page::Network && self.wifi.is_some() {
+            if matches!(
+                action,
+                Action::Key(_) | Action::Backspace | Action::KeyboardMode | Action::KeyboardShift
+            ) {
+                self.wifi_key_flash = Some((
+                    rect,
+                    std::time::Instant::now() + std::time::Duration::from_millis(190),
+                ));
+            }
+            if let Some(form) = &mut self.wifi {
+                if matches!(
+                    action,
+                    Action::Key(_) | Action::Backspace | Action::HiddenWifiSecurity
+                ) {
+                    form.error = None;
+                }
+            }
+        }
         if self.reset_preferences
             && !matches!(
                 action,
@@ -723,11 +749,35 @@ impl Ui {
             Action::NetworkField(password) => {
                 if let Some(form) = &mut self.wifi {
                     form.password_field = password;
+                    if !password {
+                        form.show_password = false;
+                    }
+                }
+            }
+            Action::ShowWifiPassword => {
+                if let Some(form) = &mut self.wifi {
+                    form.show_password = !form.show_password;
+                }
+            }
+            Action::HiddenWifiSecurity => {
+                if let Some(form) = &mut self.wifi {
+                    let open = form.is_open();
+                    form.join.auth = if open { "WPA2" } else { "OPEN" }.into();
+                    form.password_field = false;
+                    form.show_password = false;
+                }
+            }
+            Action::AutomaticWifi => {
+                if let Some(form) = &mut self.wifi {
+                    form.use_static = false;
+                    form.static_ipv4 = false;
+                    form.join.address = None;
                 }
             }
             Action::StaticWifi(enabled) => {
                 if let Some(form) = &mut self.wifi {
                     form.static_ipv4 = enabled;
+                    form.show_password = false;
                     form.address_error = false;
                 }
             }
@@ -991,6 +1041,9 @@ impl Ui {
                 address: None,
             },
             static_ipv4: false,
+            use_static: false,
+            show_password: false,
+            error: None,
             address_fields: Default::default(),
             address_field: 0,
             address_error: false,
@@ -1001,18 +1054,57 @@ impl Ui {
         });
     }
 
-    pub fn take_wifi(&mut self) -> Option<crate::network::Join> {
+    pub fn wifi_request(&mut self) -> Option<crate::network::Join> {
         let form = self.wifi.as_mut()?;
-        if form.static_ipv4 {
+        if form.static_ipv4 || form.use_static {
             form.join.address = crate::network::StaticIpv4::parse(
                 form.address_fields.each_ref().map(String::as_str),
             );
             if form.join.address.is_none() {
+                form.static_ipv4 = true;
                 form.address_error = true;
                 return None;
             }
+            form.use_static = true;
         }
-        self.wifi.take().map(|form| form.join)
+        if let Err(error) = form.join.validate() {
+            form.static_ipv4 = false;
+            form.error = Some(error);
+            return None;
+        }
+        form.show_password = false;
+        form.error = None;
+        let mut join = form.join.clone();
+        if form.is_open() {
+            join.password.clear();
+        }
+        Some(join)
+    }
+
+    pub fn wifi_finished(&mut self, result: &Result<(), String>) {
+        match result {
+            Ok(()) => self.wifi = None,
+            Err(error) => {
+                if let Some(form) = &mut self.wifi {
+                    form.error = Some(error.clone());
+                }
+            }
+        }
+    }
+
+    pub fn wifi_key_expired(&mut self) -> bool {
+        if self
+            .wifi_key_flash
+            .is_some_and(|(_, until)| std::time::Instant::now() >= until)
+        {
+            self.wifi_key_flash = None;
+            return self.wifi.is_some() && self.page == Page::Network;
+        }
+        false
+    }
+
+    pub fn showing_wifi(&self) -> bool {
+        self.page == Page::Network
     }
 
     pub fn take_repository(&mut self) -> Option<String> {
@@ -1025,6 +1117,9 @@ impl Ui {
         self.pixels.fill(p.background);
         self.buttons.clear();
         if view.ambient {
+            if let Some(form) = &mut self.wifi {
+                form.show_password = false;
+            }
             self.text(66, 244, view.time, 126, p.text, 950);
             self.text(
                 73,
@@ -1058,6 +1153,7 @@ impl Ui {
             }
         }
         self.text(92, 56, "ToonShift", 31, p.text, 270);
+        let wifi_busy = self.page == Page::Network && view.network_stage.is_some();
         for (x, width, title, page, action) in [
             (270, 126, "Schedule", Page::Schedule, Action::Schedule),
             (405, 94, "Home", Page::Home, Action::Home),
@@ -1071,6 +1167,9 @@ impl Ui {
             (622, 96, "Store", Page::Store, Action::Store),
             (727, 120, "Settings", Page::Settings, Action::Settings),
         ] {
+            if wifi_busy {
+                break;
+            }
             let selected = self.page == page
                 || (page == Page::Settings && self.page == Page::Network)
                 || (page == Page::Settings && self.page == Page::Advanced)
@@ -1098,8 +1197,10 @@ impl Ui {
             Page::RemoteAccess => self.remote_access(view, &p),
             Page::Advanced => self.hardware_screen(view, &p),
         }
-        if let Some(error) = view.error {
-            self.text(32, 581, error, 19, p.text, 992);
+        if self.page != Page::Network {
+            if let Some(error) = view.error {
+                self.text(32, 581, error, 19, p.text, 992);
+            }
         }
     }
 
@@ -1482,262 +1583,6 @@ impl Ui {
             p,
             false,
             Action::CloseLocationSearch,
-        );
-    }
-
-    fn network(&mut self, view: &View<'_>, p: &Palette) {
-        self.panel(Rect(32, 100, 960, 448), p.card, 26);
-        if let Some(form) = self.wifi.take() {
-            self.wifi_keyboard(&form, p);
-            self.wifi = Some(form);
-            return;
-        }
-        self.text(56, 148, "Wi-Fi", 28, p.text, 600);
-        self.button(
-            Rect(565, 117, 220, 48),
-            "Hidden network",
-            p,
-            false,
-            Action::HiddenNetwork,
-        );
-        self.button(
-            Rect(807, 117, 160, 48),
-            "Scan again",
-            p,
-            false,
-            Action::Network,
-        );
-        match view.wifi_connection {
-            Some(Ok(Some(connection))) => {
-                let address = connection.address.map_or_else(
-                    || self.language.translate("Waiting for IP address").to_owned(),
-                    |address| address.to_string(),
-                );
-                let signal = connection
-                    .rssi
-                    .map_or_else(String::new, |rssi| format!(" · {rssi} dBm"));
-                self.raw_text(
-                    56,
-                    195,
-                    &format!("{} · {address}{signal}", connection.ssid),
-                    19,
-                    p.text,
-                    966,
-                );
-            }
-            Some(Ok(None)) => self.text(56, 195, "Wi-Fi disconnected", 19, p.muted, 966),
-            Some(Err(_)) => self.text(
-                56,
-                195,
-                "Wi-Fi connection status unavailable",
-                19,
-                p.muted,
-                966,
-            ),
-            None => {}
-        }
-        let networks: &[_] = match view.networks {
-            Some(Ok(networks)) => networks,
-            Some(Err(_)) => {
-                self.text(56, 233, "Wi-Fi scan unavailable", 23, p.muted, 970);
-                &[]
-            }
-            None => {
-                self.text(56, 233, "Scanning for networks…", 23, p.muted, 970);
-                &[]
-            }
-        };
-        if matches!(view.networks, Some(Ok(networks)) if networks.is_empty()) {
-            self.text(56, 233, "No nearby networks found", 23, p.muted, 970);
-        }
-        let page = self.network_page.min(networks.len().saturating_sub(1) / 4);
-        for (row, network) in networks.iter().skip(page * 4).take(4).enumerate() {
-            let y = 243 + row * 49;
-            self.raw_text(56, y, &network.name, 23, p.text, 590);
-            self.text(610, y, &network.signal, 20, p.muted, 790);
-            self.button(
-                Rect(822, y - 29, 145, 39),
-                "Join",
-                p,
-                false,
-                Action::ChooseNetwork(page * 4 + row),
-            );
-        }
-        if page > 0 {
-            self.button(
-                Rect(56, 430, 144, 44),
-                "Previous",
-                p,
-                false,
-                Action::NetworkPage(page - 1),
-            );
-        }
-        if (page + 1) * 4 < networks.len() {
-            self.button(
-                Rect(823, 430, 144, 44),
-                "Next",
-                p,
-                false,
-                Action::NetworkPage(page + 1),
-            );
-        }
-        self.button(
-            Rect(342, 430, 340, 44),
-            "Reconnect saved network",
-            p,
-            false,
-            Action::ReconnectWifi,
-        );
-        if let Some(wired) = view.ethernet {
-            let state = match wired.carrier {
-                Some(true) => "Ethernet connected",
-                Some(false) => "Ethernet disconnected",
-                None => "Ethernet link unknown",
-            };
-            let detail = wired.address.map_or_else(
-                || {
-                    if wired.carrier == Some(true) {
-                        format!(" · {}", self.language.translate("Waiting for IP address"))
-                    } else {
-                        String::new()
-                    }
-                },
-                |ip| format!(" · {ip}"),
-            );
-            self.raw_text(
-                56,
-                514,
-                &format!("{}{detail}", self.language.translate(state)),
-                20,
-                p.muted,
-                963,
-            );
-        }
-        if let Some(message) = view.network_message.filter(|_| view.error.is_none()) {
-            self.text(32, 581, message, 19, p.muted, 992);
-        }
-    }
-
-    fn wifi_keyboard(&mut self, form: &WifiForm, p: &Palette) {
-        if form.static_ipv4 {
-            self.wifi_static_address(form, p);
-            return;
-        }
-        let open = matches!(form.join.auth.as_str(), "OPEN" | "NONE");
-        self.text(56, 148, "Join Wi-Fi", 28, p.text, 960);
-        let name = if form.join.name.is_empty() {
-            "Network name"
-        } else {
-            &form.join.name
-        };
-        if form.hidden {
-            self.button(
-                Rect(56, 165, 422, 50),
-                name,
-                p,
-                !form.password_field,
-                Action::NetworkField(false),
-            );
-        } else {
-            self.raw_text(56, 199, name, 24, p.text, 478);
-        }
-        if !open {
-            let mask = if form.join.password.is_empty() {
-                "Password".to_owned()
-            } else {
-                let count = form.join.password.len();
-                format!("{}  ({count})", "•".repeat(count.min(14)))
-            };
-            self.button(
-                Rect(492, 165, 472, 50),
-                &mask,
-                p,
-                form.password_field,
-                Action::NetworkField(true),
-            );
-        }
-        if !open || form.hidden {
-            self.keyboard(form.symbols, form.shift, p);
-        }
-        self.button(
-            Rect(56, 473, 212, 52),
-            "Cancel",
-            p,
-            false,
-            Action::CloseNetworkForm,
-        );
-        self.button(
-            Rect(285, 473, 235, 52),
-            "Static IPv4",
-            p,
-            false,
-            Action::StaticWifi(true),
-        );
-        self.button(
-            Rect(752, 473, 215, 52),
-            "Join network",
-            p,
-            true,
-            Action::JoinNetwork,
-        );
-    }
-
-    fn wifi_static_address(&mut self, form: &WifiForm, p: &Palette) {
-        self.text(56, 148, "Static IPv4", 28, p.text, 960);
-        for (index, label) in ["IP address", "Subnet mask", "Gateway", "DNS server"]
-            .into_iter()
-            .enumerate()
-        {
-            let x = 56 + 228 * index;
-            self.text(x, 190, label, 20, p.muted, x + 220);
-            let value = &form.address_fields[index];
-            self.button(
-                Rect(x, 204, 215, 55),
-                if value.is_empty() { "–" } else { value },
-                p,
-                index == form.address_field,
-                Action::StaticWifiField(index),
-            );
-        }
-        for (index, key) in "1234567890.".chars().enumerate() {
-            self.button(
-                Rect(56 + 76 * index, 291, 67, 55),
-                &key.to_string(),
-                p,
-                false,
-                Action::Key(key),
-            );
-        }
-        self.button(
-            Rect(56, 363, 190, 47),
-            "Backspace",
-            p,
-            false,
-            Action::Backspace,
-        );
-        if form.address_error {
-            self.text(
-                56,
-                448,
-                "Check the IPv4 address, subnet mask, gateway and DNS server.",
-                19,
-                p.muted,
-                963,
-            );
-        }
-        self.button(
-            Rect(56, 473, 245, 52),
-            "Back to Wi-Fi credentials",
-            p,
-            false,
-            Action::StaticWifi(false),
-        );
-        self.button(
-            Rect(752, 473, 215, 52),
-            "Join network",
-            p,
-            true,
-            Action::JoinNetwork,
         );
     }
 
@@ -4391,9 +4236,10 @@ pub struct View<'a> {
     pub schedule: Option<&'a Result<Vec<crate::schedule::Slot>, String>>,
     pub presets: Option<&'a Result<Vec<crate::presets::Preset>, String>>,
     pub networks: Option<&'a Result<Vec<NetworkRow>, String>>,
-    pub wifi_connection: Option<&'a std::io::Result<Option<crate::network::Connection>>>,
+    pub wifi_connection: Option<&'a Result<Option<crate::network::Connection>, ()>>,
     pub ethernet: Option<&'a crate::network::Ethernet>,
-    pub network_message: Option<&'a str>,
+    pub network_stage: Option<crate::network::WifiStage>,
+    pub network_result: Option<&'a Result<(), String>>,
     pub catalog_message: Option<&'a str>,
     pub readings: &'a HashMap<String, crate::feed::Reading>,
     pub telemetry: &'a crate::telemetry::Readings,
@@ -4445,6 +4291,9 @@ pub struct NetworkRow {
 
 struct WifiForm {
     static_ipv4: bool,
+    use_static: bool,
+    show_password: bool,
+    error: Option<String>,
     address_fields: [String; 4],
     address_field: usize,
     address_error: bool,
@@ -4453,6 +4302,12 @@ struct WifiForm {
     password_field: bool,
     shift: bool,
     symbols: bool,
+}
+
+impl WifiForm {
+    fn is_open(&self) -> bool {
+        matches!(self.join.auth.as_str(), "OPEN" | "NONE")
+    }
 }
 
 #[derive(Default)]

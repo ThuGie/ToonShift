@@ -65,6 +65,11 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn wifi_connection_status() -> Result<Option<network::Connection>, ()> {
+    network::connection().map_err(|_| ())
+}
+
 fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
     use std::io::{BufWriter, Write};
     use std::path::Path;
@@ -74,6 +79,10 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::other("Expected a .ppm output path"))?;
     let page = args.next();
     let night = args.next().as_deref() == Some("night");
+    let wifi_preview = matches!(
+        page.as_deref(),
+        Some("wifi" | "wifi-password" | "wifi-connecting")
+    );
     let settings = plugins::Settings {
         appearance: if night {
             plugins::Appearance::Night
@@ -131,6 +140,17 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         current_modulation_level: "28".into(),
         ot_comm_error: "0".into(),
     };
+    let networks = Ok(vec![ui::NetworkRow {
+        name: "Home network".into(),
+        signal: "-52 dBm".into(),
+        encryption: "autodetect".into(),
+        auth: "WPA2".into(),
+    }]);
+    let wifi = Ok(Some(network::Connection {
+        ssid: "Current network".into(),
+        address: Some(std::net::Ipv4Addr::new(192, 168, 1, 52)),
+        rssi: Some(-63),
+    }));
     let view = ui::View {
         remote: None,
         heating_behaviour: None,
@@ -152,10 +172,12 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         presets: None,
         vacations: None,
         vacation_busy: false,
-        networks: None,
-        wifi_connection: None,
+        networks: wifi_preview.then_some(&networks),
+        wifi_connection: wifi_preview.then_some(&wifi),
         ethernet: None,
-        network_message: None,
+        network_stage: (page.as_deref() == Some("wifi-connecting"))
+            .then_some(network::WifiStage::GettingAddress),
+        network_result: None,
         catalog_message: None,
         catalog_sources: &[],
         readings: &Default::default(),
@@ -169,6 +191,20 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
     };
     let mut ui = ui::Ui::new();
     ui.draw(&view);
+    if wifi_preview {
+        ui.hit(750, 40);
+        ui.draw(&view);
+        ui.hit(452, 450);
+        if page.as_deref() != Some("wifi") {
+            ui.wifi_form(networks.as_ref().ok().and_then(|rows| rows.first()));
+        }
+        if page.as_deref() == Some("wifi-password") {
+            ui.draw(&view);
+            for x in [95, 186, 277, 368, 459, 550, 641, 732] {
+                ui.hit(x, 253);
+            }
+        }
+    }
     match page.as_deref() {
         Some("store") => {
             ui.hit(670, 40);
@@ -400,7 +436,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut ethernet = None;
     let (join_sender, join_receiver) = std::sync::mpsc::channel();
     let mut joining = false;
-    let mut network_message = None;
+    let (wifi_progress_sender, wifi_progress_receiver) = std::sync::mpsc::channel();
+    let mut network_stage = None;
+    let mut network_result = None;
+    let (wifi_status_sender, wifi_status_receiver) = std::sync::mpsc::channel();
+    let mut wifi_status_due = std::time::Instant::now();
+    let mut wifi_status_pending = false;
     let (diagnostics_sender, diagnostics_receiver) = std::sync::mpsc::channel();
     let mut exporting_diagnostics = false;
     let mut diagnostics_message = None;
@@ -787,6 +828,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 dirty |= feeds.tick(&catalog, &settings, &telemetry, &mut readings);
             }
         }
+        dirty |= ui.wifi_key_expired();
+        if let Ok((connection, wired)) = wifi_status_receiver.try_recv() {
+            wifi_status_pending = false;
+            if !joining && !scanning && ui.showing_wifi() {
+                dirty |= wifi_connection.as_ref() != Some(&connection) || ethernet != wired;
+                wifi_connection = Some(connection);
+                ethernet = wired;
+            }
+        }
+        if ui.showing_wifi()
+            && !wifi_status_pending
+            && !scanning
+            && !joining
+            && std::time::Instant::now() >= wifi_status_due
+        {
+            wifi_status_pending = true;
+            wifi_status_due = std::time::Instant::now() + Duration::from_secs(5);
+            let sender = wifi_status_sender.clone();
+            std::thread::spawn(move || {
+                let _ = sender.send((wifi_connection_status(), network::ethernet()));
+            });
+        }
         if let Ok((result, connection, wired)) = network_receiver.try_recv() {
             networks = Some(result);
             wifi_connection = Some(connection);
@@ -794,14 +857,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             scanning = false;
             dirty = true;
         }
+        for stage in wifi_progress_receiver.try_iter() {
+            if joining {
+                network_stage = Some(stage);
+                dirty = true;
+            }
+        }
         if let Ok((result, connection, wired)) = join_receiver.try_recv() {
             wifi_connection = Some(connection);
             ethernet = wired;
             joining = false;
-            network_message = Some(match result {
-                Ok(()) => "Connected to the selected network.".to_owned(),
-                Err(error) => error,
-            });
+            network_stage = None;
+            ui.wifi_finished(&result);
+            network_result = Some(result);
             dirty = true;
         }
         if let Ok(result) = diagnostics_receiver.try_recv() {
@@ -895,7 +963,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 networks: networks.as_ref(),
                 wifi_connection: wifi_connection.as_ref(),
                 ethernet: ethernet.as_ref(),
-                network_message: network_message.as_deref(),
+                network_stage,
+                network_result: network_result.as_ref(),
                 catalog_message: catalog_message.as_deref(),
                 catalog_sources: &catalog_sources,
                 readings: &readings,
@@ -1401,6 +1470,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Action::Network) => {
                 if !scanning && !joining {
                     scanning = true;
+                    network_result = None;
                     networks = None;
                     let sender = network_sender.clone();
                     std::thread::spawn(move || {
@@ -1412,13 +1482,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 })
                                 .map(|mut rows| {
                                     rows.retain(|row| !row.name.trim().is_empty());
+                                    rows.sort_by_cached_key(|row| {
+                                        std::cmp::Reverse(
+                                            row.signal
+                                                .split_whitespace()
+                                                .next()
+                                                .and_then(|signal| signal.parse::<i16>().ok())
+                                                .unwrap_or(i16::MIN),
+                                        )
+                                    });
                                     let mut seen = std::collections::HashSet::new();
                                     rows.retain(|row| {
                                         seen.insert((row.name.clone(), row.auth.clone()))
                                     });
                                     rows
                                 });
-                        let _ = sender.send((result, network::connection(), network::ethernet()));
+                        let _ =
+                            sender.send((result, wifi_connection_status(), network::ethernet()));
                     });
                 }
                 persist = false;
@@ -1436,20 +1516,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 persist = false;
             }
             Some(Action::HiddenNetwork) => {
-                if !joining {
+                if !joining && !scanning {
                     ui.wifi_form(None);
                 }
                 persist = false;
             }
             Some(Action::JoinNetwork) => {
-                if let Some(form) = (!joining && !scanning).then(|| ui.take_wifi()).flatten() {
+                if let Some(form) = (!joining && !scanning).then(|| ui.wifi_request()).flatten() {
                     joining = true;
                     network_message = Some("Applying Wi-Fi settings…".into());
                     let sender = join_sender.clone();
                     std::thread::spawn(move || {
                         let _ = sender.send((
-                            network::join(form),
-                            network::connection(),
+                            network::join(form, |stage| {
+                                let _ = progress.send(stage);
+                            }),
+                            wifi_connection_status(),
                             network::ethernet(),
                         ));
                     });
@@ -1464,7 +1546,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     std::thread::spawn(move || {
                         let _ = sender.send((
                             network::reconnect(),
-                            network::connection(),
+                            wifi_connection_status(),
                             network::ethernet(),
                         ));
                     });

@@ -64,6 +64,80 @@ impl Language {
             "Ethernet disconnected" => "Ethernet niet verbonden",
             "Ethernet link unknown" => "Ethernet-linkstatus onbekend",
             "Reconnect saved network" => "Opnieuw verbinden",
+            "Wi-Fi setup" => "Wifi instellen",
+            "Saving Wi-Fi settings…" => "Wifi-instellingen opslaan…",
+            "Joining the network…" => "Verbinden met het netwerk…",
+            "Connected to Wi-Fi. Getting an IP address…" => "Wifi verbonden. IP-adres ophalen…",
+            "Restoring the previous Wi-Fi…" => "Vorig wifi-netwerk herstellen…",
+            "Checking the network. Please wait." => "Het netwerk wordt gecontroleerd. Even geduld.",
+            "Save settings" => "Instellingen opslaan",
+            "Get IP address" => "IP-adres ophalen",
+            "Connected" => "Verbonden",
+            "Checking current connection…" => "Huidige verbinding controleren…",
+            "Wi-Fi scan failed. Tap Scan again to retry." => {
+                "Wifi-scan mislukt. Tik op Opnieuw zoeken."
+            }
+            "Open network" => "Open netwerk",
+            "Select  ›" => "Kiezen  ›",
+            "Wi-Fi setup complete." => "Wifi is ingesteld.",
+            "Join a hidden network" => "Verbinden met een verborgen netwerk",
+            "IPv4 · Manual" => "IPv4 · Handmatig",
+            "IPv4 · Automatic" => "IPv4 · Automatisch",
+            "Network" => "Netwerk",
+            "Show" => "Tonen",
+            "Hide" => "Verbergen",
+            "This network does not require a password." => {
+                "Dit netwerk heeft geen wachtwoord nodig."
+            }
+            "characters entered" => "tekens ingevoerd",
+            "Connect" => "Verbinden",
+            "Manual IPv4 setup" => "IPv4 handmatig instellen",
+            "Use automatic IPv4" => "IPv4 automatisch instellen",
+            "Enter a Wi-Fi network name of 1–32 bytes." => {
+                "Voer een wifi-naam van 1–32 bytes in."
+            }
+            "This network security mode is unavailable on this Toon." => {
+                "Deze Toon ondersteunt de beveiliging van dit netwerk niet."
+            }
+            "Enter an 8–63 character Wi-Fi password or a 64-digit hex key." => {
+                "Voer 8–63 wachtwoordtekens of een hexadecimale sleutel van 64 tekens in."
+            }
+            "Could not read the current Wi-Fi configuration." => {
+                "De huidige wifi-instellingen konden niet worden gelezen."
+            }
+            "Could not snapshot the existing static IPv4 configuration." => {
+                "De huidige handmatige IPv4-instellingen konden niet worden opgeslagen."
+            }
+            "Unsupported saved Wi-Fi address configuration." => {
+                "Het opgeslagen type wifi-adres wordt niet ondersteund."
+            }
+            "The existing Wi-Fi settings cannot be restored by ToonShift." => {
+                "ToonShift kan de huidige wifi-instellingen niet herstellen."
+            }
+            "The Toon rejected the change. Check the current connection." => {
+                "Toon weigerde de wijziging. Controleer de huidige verbinding."
+            }
+            "The Toon rejected the change. Previous Wi-Fi is still connected." => {
+                "Toon weigerde de wijziging. Het vorige wifi-netwerk is nog verbonden."
+            }
+            "No IP address assigned. Previous Wi-Fi restored." => {
+                "Geen IP-adres gekregen. Vorig wifi-netwerk hersteld."
+            }
+            "Could not join. Previous Wi-Fi restored. Check the password and signal." => {
+                "Verbinden mislukt. Vorige wifi hersteld. Controleer wachtwoord en signaal."
+            }
+            "Could not confirm recovery. Check which network is connected." => {
+                "Herstel niet bevestigd. Controleer met welk netwerk Toon is verbonden."
+            }
+            "Wi-Fi joined, but no usable IP address was assigned." => {
+                "Wifi verbonden, maar geen bruikbaar IP-adres gekregen."
+            }
+            "The Toon rejected the Wi-Fi settings. Check network security and IPv4." => {
+                "Toon weigerde de wifi-instellingen. Controleer netwerkbeveiliging en IPv4."
+            }
+            "Could not join. Check the password, signal and Wi-Fi security." => {
+                "Verbinden mislukt. Controleer wachtwoord, signaal en wifi-beveiliging."
+            }
             "Reconnecting to saved Wi-Fi…" => "Opnieuw verbinden met opgeslagen Wi-Fi…",
             "No saved Wi-Fi network." => "Geen opgeslagen Wi-Fi-netwerk.",
             "Could not request a Wi-Fi reconnect." => "Kon niet opnieuw verbinden met Wi-Fi.",

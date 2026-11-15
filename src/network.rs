@@ -1,10 +1,14 @@
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Ipv4Addr;
+#[cfg(unix)]
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixDatagram;
+#[cfg(unix)]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct Join {
     pub name: String,
     pub password: String,
@@ -13,6 +17,7 @@ pub struct Join {
     pub address: Option<StaticIpv4>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct StaticIpv4 {
     ip: Ipv4Addr,
     mask: Ipv4Addr,
@@ -59,12 +64,14 @@ impl StaticIpv4 {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct Connection {
     pub ssid: String,
     pub address: Option<std::net::Ipv4Addr>,
     pub rssi: Option<i16>,
 }
 
+#[derive(PartialEq, Eq)]
 pub struct Ethernet {
     pub carrier: Option<bool>,
     pub address: Option<Ipv4Addr>,
@@ -131,14 +138,10 @@ fn parse_connection(status: &str, signal: &str) -> Option<Connection> {
     if field("wpa_state") != Some("COMPLETED") {
         return None;
     }
-    let ssid = field("ssid")?
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(64)
-        .collect();
+    let ssid = decode_ssid(field("ssid")?);
     let address = field("ip_address")
         .and_then(|address| address.parse::<std::net::Ipv4Addr>().ok())
-        .filter(|address| !address.is_unspecified());
+        .filter(|address| !address.is_unspecified() && !address.is_link_local());
     let rssi = signal
         .lines()
         .find_map(|line| line.strip_prefix("RSSI="))
@@ -149,6 +152,33 @@ fn parse_connection(status: &str, signal: &str) -> Option<Connection> {
         address,
         rssi,
     })
+}
+
+// wpa_supplicant prints SSIDs with printf_encode, including non-ASCII bytes.
+fn decode_ssid(value: &str) -> String {
+    let mut decoded = Vec::with_capacity(value.len());
+    let mut remaining = value.as_bytes();
+    while let Some((&first, rest)) = remaining.split_first() {
+        remaining = rest;
+        if first == b'\\' {
+            if let [b'x', hi, lo, tail @ ..] = remaining {
+                if let (Some(hi), Some(lo)) =
+                    (char::from(*hi).to_digit(16), char::from(*lo).to_digit(16))
+                {
+                    decoded.push((hi * 16 + lo) as u8);
+                    remaining = tail;
+                    continue;
+                }
+            }
+            if let [escaped @ (b'\\' | b'"'), tail @ ..] = remaining {
+                decoded.push(*escaped);
+                remaining = tail;
+                continue;
+            }
+        }
+        decoded.push(first);
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 #[cfg(test)]
@@ -190,11 +220,25 @@ mod tests {
             Some(std::net::Ipv4Addr::new(192, 168, 1, 10))
         );
         assert_eq!(connection.rssi, Some(-57));
+        let connection = parse_connection(
+            r"wpa_state=COMPLETED
+ssid=Caf\xc3\xa9\\Office
+ip_address=169.254.2.3",
+            "",
+        )
+        .unwrap();
+        assert_eq!(connection.ssid, r"Café\Office");
+        assert_eq!(connection.address, None);
     }
 }
 
 #[cfg(unix)]
 pub fn connection() -> std::io::Result<Option<Connection>> {
+    query_connection(true)
+}
+
+#[cfg(unix)]
+fn query_connection(include_signal: bool) -> std::io::Result<Option<Connection>> {
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let path = format!(
@@ -218,7 +262,11 @@ pub fn connection() -> std::io::Result<Option<Connection>> {
             Ok(String::from_utf8_lossy(&buffer[..size]).into_owned())
         };
         let status = query(b"STATUS")?;
-        let signal = query(b"SIGNAL_POLL").unwrap_or_default();
+        let signal = if include_signal {
+            query(b"SIGNAL_POLL").unwrap_or_default()
+        } else {
+            String::new()
+        };
         Ok(parse_connection(&status, &signal))
     })();
     let _ = std::fs::remove_file(path);
@@ -226,7 +274,7 @@ pub fn connection() -> std::io::Result<Option<Connection>> {
 }
 
 impl Join {
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.name.is_empty() || self.name.len() > 32 || self.name.chars().any(char::is_control) {
             return Err("Enter a Wi-Fi network name of 1–32 bytes.".into());
         }
@@ -245,6 +293,7 @@ impl Join {
     }
 }
 
+#[cfg(unix)]
 fn xml(input: &str) -> String {
     input
         .replace('&', "&amp;")
@@ -252,6 +301,7 @@ fn xml(input: &str) -> String {
         .replace('>', "&gt;")
 }
 
+#[cfg(unix)]
 fn saved_network() -> Result<Option<(Join, String)>, String> {
     let response = crate::thermostat::firmware_get(
         "hcb_config",
@@ -304,31 +354,90 @@ fn saved_network() -> Result<Option<(Join, String)>, String> {
     Ok(Some((previous, field("wifi_bssid").into())))
 }
 
-pub fn join(join: Join) -> Result<(), String> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WifiStage {
+    Saving,
+    Joining,
+    GettingAddress,
+    Reconnecting,
+    Restoring,
+}
+
+#[cfg(unix)]
+pub fn join(join: Join, mut progress: impl FnMut(WifiStage)) -> Result<(), String> {
     join.validate()?;
     let previous = saved_network()?;
+    let before = query_connection(false).ok().flatten();
     let deadline = Instant::now() + Duration::from_secs(45);
-    let applied = send_join(&join, "");
-    if let Ok(Err(error)) = applied {
-        return Err(error);
-    }
-    #[cfg(unix)]
-    if wait_for_connection(&join, deadline) {
+    let reply = send_join(&join, "");
+    let rejected = matches!(reply, Ok(false));
+    let same_network = before.as_ref().is_some_and(|link| link.ssid == join.name);
+
+    let mut stage = WifiStage::Saving;
+    let mut associated = false;
+    let deadline = if rejected {
+        deadline.min(Instant::now() + Duration::from_secs(8))
+    } else {
+        deadline
+    };
+    let connected = wait_for_connection(&join, deadline, |connected| {
+        associated |= connected;
+        let next = if connected {
+            WifiStage::GettingAddress
+        } else {
+            WifiStage::Joining
+        };
+        if stage != next {
+            stage = next;
+            progress(stage);
+        }
+    });
+    // An already-active association does not prove that changed credentials
+    // or addressing were saved when the firmware reply was missing or negative.
+    if connected
+        && (matches!(reply, Ok(true))
+            || !same_network
+            || saved_network().is_ok_and(|saved| saved.is_some_and(|(saved, _)| saved == join)))
+    {
         return Ok(());
     }
-    if let Some((previous, bssid)) = previous {
-        #[cfg(unix)]
-        if matches!(send_join(&previous, &bssid), Ok(Ok(())))
-            && wait_for_connection(&previous, Instant::now() + Duration::from_secs(15))
-        {
-            return Err("Connection failed. Previous Wi-Fi settings restored.".into());
+    if rejected
+        && before.is_some()
+        && query_connection(false).ok().flatten() == before
+        && saved_network().is_ok_and(|current| current == previous)
+    {
+        return Err(if same_network {
+            "The Toon rejected the change. Check the current connection."
+        } else {
+            "The Toon rejected the change. Previous Wi-Fi is still connected."
         }
-        return Err(
-            "Connection failed and restoration was not confirmed. Open stock setup to recover."
-                .into(),
-        );
+        .into());
     }
-    Err("The Toon could not confirm the Wi-Fi connection.".into())
+    if let Some((previous, bssid)) = previous {
+        progress(WifiStage::Restoring);
+        let _ = send_join(&previous, &bssid);
+        if wait_for_connection(&previous, Instant::now() + Duration::from_secs(15), |_| {}) {
+            return Err(if connected {
+                "Could not confirm the new settings. Previous Wi-Fi restored."
+            } else if associated {
+                "No IP address assigned. Previous Wi-Fi restored."
+            } else {
+                "Could not join. Previous Wi-Fi restored. Check the password and signal."
+            }
+            .into());
+        }
+        return Err("Could not confirm recovery. Check which network is connected.".into());
+    }
+    Err(if connected {
+        "Could not confirm that the new Wi-Fi settings were saved."
+    } else if associated {
+        "Wi-Fi joined, but no usable IP address was assigned."
+    } else if rejected {
+        "The Toon rejected the Wi-Fi settings. Check network security and IPv4."
+    } else {
+        "Could not join. Check the password, signal and Wi-Fi security."
+    }
+    .into())
 }
 
 #[cfg(unix)]
@@ -352,67 +461,42 @@ pub fn reconnect() -> Result<(), String> {
         )
         .map_err(|_| "Could not request a Wi-Fi reconnect.")?;
         std::thread::sleep(Duration::from_secs(2));
-        if wait_for_connection(&saved, Instant::now() + Duration::from_secs(15)) {
+        if wait_for_connection(&saved, Instant::now() + Duration::from_secs(15), |_| {}) {
             return Ok(());
         }
     }
-    if matches!(send_join(&saved, &bssid), Ok(Ok(())))
-        && wait_for_connection(&saved, Instant::now() + Duration::from_secs(15))
-    {
+    let _ = send_join(&saved, &bssid);
+    if wait_for_connection(&saved, Instant::now() + Duration::from_secs(15), |_| {}) {
         return Ok(());
     }
     Err("Could not reconnect to the saved Wi-Fi network.".into())
 }
 
 #[cfg(unix)]
-fn wait_for_connection(join: &Join, deadline: Instant) -> bool {
-    let path = format!("/run/toonshift-wpa-{}", std::process::id());
-    let _ = std::fs::remove_file(&path);
-    let Ok(socket) = UnixDatagram::bind(&path) else {
-        return false;
-    };
-    let result = (|| {
-        socket
-            .set_read_timeout(Some(Duration::from_millis(500)))
-            .ok()?;
-        let mut reply = [0u8; 4096];
-        while Instant::now() < deadline {
-            if socket
-                .send_to(b"STATUS", "/run/wpa_supplicant/wlan0")
-                .is_ok()
-            {
-                if let Ok(count) = socket.recv(&mut reply) {
-                    if let Ok(status) = std::str::from_utf8(&reply[..count]) {
-                        let connected = status.lines().any(|line| line == "wpa_state=COMPLETED");
-                        let selected = status
-                            .lines()
-                            .any(|line| line.strip_prefix("ssid=") == Some(&join.name));
-                        let has_address = status
-                            .lines()
-                            .filter_map(|line| line.strip_prefix("ip_address="))
-                            .filter_map(|value| value.parse::<Ipv4Addr>().ok())
-                            .any(|address| {
-                                !address.is_unspecified()
-                                    && join
-                                        .address
-                                        .as_ref()
-                                        .is_none_or(|expected| address == expected.ip)
-                            });
-                        if connected && selected && has_address {
-                            return Some(());
-                        }
-                    }
-                }
-            }
-            std::thread::sleep(Duration::from_secs(1));
+fn wait_for_connection(join: &Join, deadline: Instant, mut report: impl FnMut(bool)) -> bool {
+    let mut last_address = None;
+    while Instant::now() < deadline {
+        let requested = query_connection(false)
+            .ok()
+            .flatten()
+            .filter(|link| link.ssid == join.name);
+        report(requested.is_some());
+        let address = requested.and_then(|link| link.address).filter(|address| {
+            join.address
+                .as_ref()
+                .is_none_or(|expected| *address == expected.ip)
+        });
+        if address.is_some() && address == last_address {
+            return true;
         }
-        None
-    })();
-    let _ = std::fs::remove_file(path);
-    result.is_some()
+        last_address = address;
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    false
 }
 
-fn send_join(join: &Join, bssid: &str) -> std::io::Result<Result<(), String>> {
+#[cfg(unix)]
+fn send_join(join: &Join, bssid: &str) -> std::io::Result<bool> {
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")?;
     let host = host.trim();
     if host.is_empty()
@@ -463,15 +547,8 @@ fn send_join(join: &Join, bssid: &str) -> std::io::Result<Result<(), String>> {
             continue;
         };
         if message.contains(&expected) && message.contains("class=\"response\"") {
-            return Ok(
-                if message.contains("<result>ok</result>")
-                    || message.contains("<result>no change</result>")
-                {
-                    Ok(())
-                } else {
-                    Err("The Toon network service rejected the settings.".into())
-                },
-            );
+            return Ok(message.contains("<result>ok</result>")
+                || message.contains("<result>no change</result>"));
         }
     }
     Err(std::io::Error::other("Missing Wi-Fi response"))
