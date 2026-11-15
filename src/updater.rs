@@ -728,4 +728,39 @@ mod tests {
         }
         std::fs::remove_dir(root).unwrap();
     }
+
+    #[test]
+    fn supervisor_restores_live_executable_when_trial_exits() {
+        let root =
+            std::env::temp_dir().join(format!("toonshift-updater-trial-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let live = br#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "ToonShift 1.2.3 test"; exit 0; fi
+cd "$(dirname "$0")" || exit 1
+if [ ! -e requested ]; then
+    touch requested
+    printf '"Restore"' > update-request.json
+fi
+"#;
+        let broken = b"#!/bin/sh\nif [ \"$1\" = \"--probe\" ]; then exit 0; fi\nexit 1\n";
+        atomic(&root.join("toon-rust"), live, true).unwrap();
+        atomic(&root.join("update-previous"), broken, true).unwrap();
+        assert!(check_space(&root, u64::MAX).is_err());
+        supervise(&root).unwrap();
+        assert_eq!(std::fs::read(root.join("toon-rust")).unwrap(), live);
+        assert_eq!(
+            read_state(&root).unwrap().rollback_reason,
+            "Update failed startup checks"
+        );
+        assert!(!root.join("update-pending.json").exists());
+        for name in [
+            "toon-rust",
+            "update-previous",
+            "update-state.json",
+            "requested",
+        ] {
+            std::fs::remove_file(root.join(name)).unwrap();
+        }
+        std::fs::remove_dir(root).unwrap();
+    }
 }
