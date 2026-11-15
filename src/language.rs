@@ -333,6 +333,7 @@ impl Language {
             "Minimal" => "Minimaal",
             "Live meters" => "Live meterstanden",
             "Electricity and gas charts" => "Stroom- en gasgrafieken",
+            "Live flow and charts" => "Live verbruik en grafieken",
             "Wide controls" => "Grote knoppen",
             "Side panel" => "Zijpaneel",
             "− Cooler" => "− Koeler",

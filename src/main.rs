@@ -558,7 +558,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !ambient && ui.showing_home() {
             let now = std::time::Instant::now();
             match settings.home_layout {
-                plugins::HomeLayout::Usage if !home_usage_busy && now >= home_usage_due => {
+                layout if layout.shows_usage() && !home_usage_busy && now >= home_usage_due => {
                     home_usage_busy = true;
                     home_usage_due = now + Duration::from_secs(45);
                     let sources = settings.meter_sources.clone();

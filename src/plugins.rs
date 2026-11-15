@@ -852,6 +852,7 @@ pub enum HomeLayout {
     Minimal,
     LiveMeters,
     Usage,
+    LiveUsage,
     Schedule,
     Weather,
     WideControls,
@@ -859,10 +860,11 @@ pub enum HomeLayout {
 }
 
 impl HomeLayout {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Minimal,
         Self::LiveMeters,
         Self::Usage,
+        Self::LiveUsage,
         Self::Schedule,
         Self::Weather,
         Self::WideControls,
@@ -870,12 +872,17 @@ impl HomeLayout {
         Self::Dashboard,
     ];
 
+    pub fn shows_usage(self) -> bool {
+        matches!(self, Self::Usage | Self::LiveUsage)
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Self::Dashboard => "Tile dashboard",
             Self::Minimal => "Minimal",
             Self::LiveMeters => "Live meters",
             Self::Usage => "Electricity and gas charts",
+            Self::LiveUsage => "Live flow and charts",
             Self::Schedule => "Schedule",
             Self::Weather => "Weather",
             Self::WideControls => "Wide controls",

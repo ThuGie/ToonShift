@@ -19,7 +19,7 @@ impl Ui {
         );
         for (i, layout) in HomeLayout::ALL.into_iter().enumerate() {
             self.button(
-                Rect(56 + i % 2 * 459, 188 + i / 2 * 67, 446, 55),
+                Rect(56 + i % 3 * 306, 188 + i / 3 * 80, 294, 64),
                 layout.title(),
                 p,
                 view.settings.home_layout == layout,
@@ -129,10 +129,24 @@ impl Ui {
                     );
                 }
             }
-            HomeLayout::Usage => {
-                for (index, meter) in [Meter::Electricity, Meter::Gas].into_iter().enumerate() {
+            HomeLayout::Usage | HomeLayout::LiveUsage => {
+                for (index, (meter, metric)) in [
+                    (Meter::Electricity, Metric::Electricity),
+                    (Meter::Gas, Metric::Gas),
+                ]
+                .into_iter()
+                .enumerate()
+                {
                     let rect = Rect(32 + index * 486, 313, 474, 235);
-                    self.home_chart(rect, meter, view.home_usage.map(|rows| &rows[index]), p);
+                    let live = (layout == HomeLayout::LiveUsage)
+                        .then(|| crate::telemetry::display(metric, view.telemetry));
+                    self.home_chart(
+                        rect,
+                        meter,
+                        view.home_usage.map(|rows| &rows[index]),
+                        live.as_deref(),
+                        p,
+                    );
                     self.buttons
                         .push((rect, Action::Energy(meter, Period::Day)));
                 }
@@ -198,12 +212,21 @@ impl Ui {
         rect: Rect,
         meter: Meter,
         result: Option<&Result<Chart, String>>,
+        live: Option<&str>,
         p: &Palette,
     ) {
         let Rect(x, y, w, _) = rect;
         self.panel(rect, p.card, 23);
         self.text(x + 20, y + 33, meter.title(), 22, p.text, x + w - 20);
         self.text(x + 269, y + 33, "Last 24 hours", 17, p.muted, x + w - 17);
+        if let Some(live) = live {
+            let value = format!(
+                "{} · {}",
+                self.language.translate("Live"),
+                self.language.translate(live)
+            );
+            self.raw_text(x + 20, y + 70, &value, 28, p.accent, x + w - 18);
+        }
         let Some(Ok(chart)) = result else {
             self.text(
                 x + 20,
@@ -232,13 +255,13 @@ impl Ui {
         };
         self.raw_text(
             x + 20,
-            y + 83,
+            y + if live.is_some() { 99 } else { 83 },
             &format!("{total:.3} {}", chart.unit),
-            32,
+            if live.is_some() { 22 } else { 32 },
             p.text,
             x + w - 18,
         );
-        let top = y + 106;
+        let top = y + if live.is_some() { 116 } else { 106 };
         let bottom = y + 198;
         let left = x + 21;
         let width = w - 42;
