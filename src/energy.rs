@@ -313,10 +313,35 @@ mod tests {
             .into()
         );
     }
+
+    #[test]
+    fn selected_meter_history_produces_usage_and_keeps_missing_intervals() {
+        let from = 1_800_000_000;
+        let samples = [
+            (from, Some(1000.0)),
+            (from + METER_STEP, Some(1250.0)),
+            (from + 2 * METER_STEP, Some(1250.0)),
+            (from + 4 * METER_STEP, Some(1500.0)),
+        ]
+        .into();
+        let chart = build_chart(
+            Meter::Electricity,
+            Period::Day,
+            changes(samples, METER_STEP),
+            METER_STEP,
+            from,
+            false,
+            [None; 2],
+        );
+        assert_eq!(chart.bars[0], Some(0.25));
+        assert_eq!(chart.total, Some(0.25));
+        assert!(chart.partial_bars[0]);
+        assert_eq!(chart.bars[1], None);
+    }
 }
 
 pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
-    let (mut archive, window, mut interval, buckets) = period.query();
+    let (mut archive, window, mut interval, _) = period.query();
     if meter == Meter::Water && matches!(period, Period::Day | Period::Week) {
         archive = "10yrhours";
     }
@@ -390,6 +415,28 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
             }
         }
     }
+    Ok(build_chart(
+        meter,
+        period,
+        readings,
+        interval,
+        start,
+        partial,
+        tariff_usage,
+    ))
+}
+
+fn build_chart(
+    meter: Meter,
+    period: Period,
+    readings: Samples,
+    interval: u64,
+    start: u64,
+    partial: bool,
+    tariff_usage: [Option<f64>; 2],
+) -> Chart {
+    let (_, window, _, buckets) = period.query();
+    let end = start + window;
     let mut sums = vec![(0.0, 0u32); buckets];
     let mut observed = 0;
     for (time, reading) in readings {
@@ -430,7 +477,7 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
             })
         })
         .collect();
-    Ok(Chart {
+    Chart {
         bars,
         partial_bars,
         unit: meter.unit(period),
@@ -439,5 +486,133 @@ pub fn load(meter: Meter, period: Period) -> Result<Chart, String> {
         from: start,
         to: end,
         tariff_usage,
-    })
+    }
+}
+
+const METER_STEP: u64 = 300;
+
+impl Meter {
+    pub fn selected_metric(self) -> Option<crate::plugins::Metric> {
+        use crate::plugins::Metric;
+        match self {
+            Self::Electricity => Some(Metric::Electricity),
+            Self::Gas => Some(Metric::Gas),
+            _ => None,
+        }
+    }
+}
+
+fn selected_path(
+    root: &std::path::Path,
+    metric: crate::plugins::Metric,
+    source: &str,
+) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let key = Sha256::digest(format!("{metric:?}:{source}").as_bytes());
+    root.join(format!("meter-{key:x}.csv"))
+}
+
+pub fn record_selected(
+    root: &std::path::Path,
+    metric: crate::plugins::Metric,
+    source: &str,
+    flow: Option<f64>,
+    total: Option<f64>,
+) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    if flow.is_none() && total.is_none() {
+        return Ok(());
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(std::io::Error::other)?
+        .as_secs();
+    if now < 1_577_836_800 {
+        return Ok(());
+    }
+    let time = now - now % METER_STEP;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(selected_path(root, metric, source))?;
+    let length = file.metadata()?.len();
+    if length != 0 {
+        let mut tail = Vec::new();
+        file.seek(SeekFrom::Start(length.saturating_sub(128)))?;
+        file.read_to_end(&mut tail)?;
+        if let Some(previous) = String::from_utf8_lossy(&tail)
+            .lines()
+            .last()
+            .and_then(|line| line.split_once(','))
+            .and_then(|(time, _)| time.parse::<u64>().ok())
+        {
+            if tail.last() == Some(&b'\n') && previous >= time {
+                return Ok(());
+            }
+        }
+        if tail.last() != Some(&b'\n') {
+            file.write_all(b"\n")?;
+        }
+    }
+    let value = |value: Option<f64>| {
+        value
+            .filter(|x| x.is_finite())
+            .map(|x| x.to_string())
+            .unwrap_or_default()
+    };
+    writeln!(file, "{time},{},{}", value(flow), value(total))?;
+    file.sync_data()
+}
+
+pub fn load_selected(
+    root: &std::path::Path,
+    meter: Meter,
+    period: Period,
+    source: Option<&str>,
+) -> Result<Chart, String> {
+    use std::io::{BufRead, BufReader, ErrorKind};
+    let (Some(metric), Some(source)) = (meter.selected_metric(), source) else {
+        return load(meter, period);
+    };
+    let (_, window, _, _) = period.query();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let end = now - now % METER_STEP;
+    let start = end.saturating_sub(window);
+    let mut readings = Samples::new();
+    match std::fs::File::open(selected_path(root, metric, source)) {
+        Ok(file) => {
+            for line in BufReader::new(file).lines() {
+                let line = line.map_err(|e| e.to_string())?;
+                let mut fields = line.split(',');
+                let (Some(time), Some(flow), Some(total), None) = (
+                    fields.next().and_then(|x| x.parse::<u64>().ok()),
+                    fields.next(),
+                    fields.next(),
+                    fields.next(),
+                ) else {
+                    continue;
+                };
+                if !(start..=end).contains(&time) {
+                    continue;
+                }
+                let value = (if period.flow() { flow } else { total })
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite() && (period.flow() || *x >= 0.0));
+                readings.insert(time, value);
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    if !period.flow() {
+        readings = changes(readings, METER_STEP);
+    }
+    Ok(build_chart(
+        meter, period, readings, METER_STEP, start, false, [None; 2],
+    ))
 }

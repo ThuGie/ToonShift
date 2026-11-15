@@ -2774,6 +2774,10 @@ impl Ui {
         self.repository = Some(entry);
     }
 
+    pub fn showing_energy(&self) -> bool {
+        self.page == Page::Energy
+    }
+
     fn energy(&mut self, view: &View<'_>, p: &Palette) {
         use crate::energy::{Meter, Period};
         let (meter, period) = self.energy;
@@ -2803,11 +2807,7 @@ impl Ui {
             false,
             Action::EnergyRates,
         );
-        let live_metric = match meter {
-            Meter::Electricity => Some(crate::plugins::Metric::Electricity),
-            Meter::Gas => Some(crate::plugins::Metric::Gas),
-            _ => None,
-        };
+        let live_metric = meter.selected_metric();
         if let Some(metric) = live_metric {
             let live = crate::telemetry::display(metric, view.telemetry);
             self.raw_text(
@@ -2839,7 +2839,14 @@ impl Ui {
             self.text(
                 56,
                 281,
-                "No meter readings in this period.",
+                if live_metric.is_some_and(|metric| {
+                    view.settings.meter_sources.contains_key(&metric)
+                        && crate::telemetry::current(metric, view.telemetry).is_some()
+                }) {
+                    "Recording selected meter history. Usage needs two samples."
+                } else {
+                    "No meter readings in this period."
+                },
                 22,
                 p.muted,
                 963,

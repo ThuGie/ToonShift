@@ -371,13 +371,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut location_results = None;
     let mut location_busy = false;
     let (energy_requests, energy_jobs) =
-        std::sync::mpsc::channel::<(energy::Meter, energy::Period)>();
+        std::sync::mpsc::channel::<(energy::Meter, energy::Period, Option<String>)>();
     let (energy_replies, energy_results) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         while let Ok(first) = energy_jobs.recv() {
-            let (meter, period) = energy_jobs.try_iter().last().unwrap_or(first);
+            let (meter, period, source) = energy_jobs.try_iter().last().unwrap_or(first);
+            let chart = energy::load_selected(root, meter, period, source.as_deref());
             if energy_replies
-                .send(((meter, period), energy::load(meter, period)))
+                .send(((meter, period, source), chart))
                 .is_err()
             {
                 break;
@@ -385,6 +386,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let mut selected_energy = None;
+    let mut next_energy_refresh = std::time::Instant::now();
     let mut energy_chart = None;
     let (history_sender, history_receiver) = std::sync::mpsc::channel();
     let mut heating_history = None;
@@ -437,7 +439,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if sources == settings.meter_sources {
                 match result {
                     Ok(values) => {
-                        for (metric, value) in values {
+                        for (metric, value, _) in values {
                             if let Some(value) = value {
                                 telemetry.insert(metric, (value, std::time::Instant::now()));
                             } else {
@@ -464,6 +466,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let sender = meter_sender.clone();
             std::thread::spawn(move || {
                 let result = advanced::meter_flows(&sources);
+                if let Ok(readings) = &result {
+                    for &(metric, flow, total) in readings {
+                        if let Some(source) = sources.get(&metric) {
+                            if let Err(error) =
+                                energy::record_selected(root, metric, source, flow, total)
+                            {
+                                eprintln!("Could not record meter history: {error}");
+                            }
+                        }
+                    }
+                }
                 let _ = sender.send((sources, result));
             });
         }
@@ -506,9 +519,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             dirty = true;
         }
         for (selection, result) in energy_results.try_iter() {
-            if selected_energy == Some(selection) {
+            if selected_energy.as_ref() == Some(&selection) {
                 energy_chart = Some(result);
                 dirty = true;
+            }
+        }
+        if ui.showing_energy() && std::time::Instant::now() >= next_energy_refresh {
+            next_energy_refresh = std::time::Instant::now() + Duration::from_secs(30);
+            if let Some((meter, period, _)) = selected_energy.as_ref() {
+                let source = meter
+                    .selected_metric()
+                    .and_then(|metric| settings.meter_sources.get(&metric))
+                    .cloned();
+                let selection = (*meter, *period, source);
+                if selected_energy.as_ref() != Some(&selection) {
+                    energy_chart = None;
+                }
+                selected_energy = Some(selection.clone());
+                let _ = energy_requests.send(selection);
             }
         }
         if let Ok(result) = catalog_receiver.try_recv() {
@@ -976,10 +1004,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             Some(Action::Energy(meter, period)) => {
-                selected_energy = Some((meter, period));
+                let source = meter
+                    .selected_metric()
+                    .and_then(|metric| settings.meter_sources.get(&metric))
+                    .cloned();
+                let selection = (meter, period, source);
+                selected_energy = Some(selection.clone());
+                next_energy_refresh = std::time::Instant::now() + Duration::from_secs(30);
                 energy_chart = None;
                 energy_requests
-                    .send((meter, period))
+                    .send(selection)
                     .map_err(|_| "Energy worker stopped")?;
                 persist = false;
             }

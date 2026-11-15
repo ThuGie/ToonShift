@@ -61,7 +61,7 @@ fn channel(entry: &Value, name: &'static str, flow: &str, total: &str) -> Option
 }
 
 pub type MeterSources = std::collections::HashMap<crate::plugins::Metric, String>;
-pub type MeterFlows = Vec<(crate::plugins::Metric, Option<f64>)>;
+pub type MeterFlows = Vec<(crate::plugins::Metric, Option<f64>, Option<f64>)>;
 
 pub fn meter_flows(sources: &MeterSources) -> Result<MeterFlows, String> {
     use crate::plugins::Metric;
@@ -74,13 +74,16 @@ pub fn meter_flows(sources: &MeterSources) -> Result<MeterFlows, String> {
                 Metric::Gas => "Gas",
                 _ => return None,
             };
-            let value = inventory
+            let channel = inventory
                 .iter()
                 .filter(|node| node.connected == Some(true))
                 .flat_map(|node| &node.channels)
-                .find(|channel| channel.id == *id && channel.name == kind)
-                .and_then(|channel| channel.flow);
-            Some((metric, value))
+                .find(|channel| channel.id == *id && channel.name == kind);
+            Some((
+                metric,
+                channel.and_then(|c| c.flow),
+                channel.and_then(|c| c.total),
+            ))
         })
         .collect())
 }
