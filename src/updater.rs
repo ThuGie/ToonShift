@@ -321,6 +321,14 @@ fn request(ca: &Path, url: &str, limit: usize, etag: Option<&str>) -> Result<Res
 }
 
 pub fn check(root: &Path) -> Result<String, String> {
+    let board = std::fs::read("/proc/device-tree/compatible")
+        .map_err(|_| "Could not verify the Toon board")?;
+    if !board
+        .split(|&byte| byte == 0)
+        .any(|id| id == b"fsl,imx6sx-nxt")
+    {
+        return Err("This board is outside the stable update track".into());
+    }
     if crate::thermostat::firmware_version()?.trim() != "6.4.5" {
         return Err("This firmware is outside the stable update track".into());
     }
