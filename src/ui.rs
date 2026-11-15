@@ -38,6 +38,7 @@ enum Page {
     Display,
     HomeLayouts,
     SoftwareUpdates,
+    HeatingBehaviour,
     Advanced,
 }
 
@@ -169,6 +170,9 @@ pub enum Action {
     HomeLayouts,
     HomeLayout(crate::plugins::HomeLayout),
     SoftwareUpdates,
+    HeatingBehaviour,
+    HeatingAdvice(bool),
+    ResetHeatingLearning,
     CheckUpdates,
     InstallUpdate,
     RestoreUpdate,
@@ -655,6 +659,7 @@ impl Ui {
             Action::Display => self.page = Page::Display,
             Action::HomeLayouts => self.page = Page::HomeLayouts,
             Action::SoftwareUpdates => self.page = Page::SoftwareUpdates,
+            Action::HeatingBehaviour => self.page = Page::HeatingBehaviour,
             Action::HeatingDetails => {
                 self.page = Page::HeatingDetails;
                 self.wifi = None;
@@ -1077,6 +1082,7 @@ impl Ui {
             Page::Display => self.display_settings(view, &p),
             Page::HomeLayouts => self.home_layout_settings(view, &p),
             Page::SoftwareUpdates => self.software_updates(view, &p),
+            Page::HeatingBehaviour => self.heating_behaviour(view, &p),
             Page::Advanced => self.hardware_screen(view, &p),
         }
         if let Some(error) = view.error {
@@ -3698,6 +3704,13 @@ impl Ui {
             Action::Hardware(HardwareAction::Open),
         );
         self.button(
+            Rect(640, 299, 324, 43),
+            "Heating behaviour",
+            p,
+            false,
+            Action::HeatingBehaviour,
+        );
+        self.button(
             Rect(32, 511, 325, 48),
             "Export diagnostics",
             p,
@@ -3873,6 +3886,94 @@ impl Ui {
             || self.resetting_dashboard
     }
 
+    fn heating_behaviour(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 152, "Heating behaviour", 30, p.text, 735);
+        self.button(
+            Rect(756, 112, 207, 48),
+            "Settings",
+            p,
+            false,
+            Action::Settings,
+        );
+        self.button(
+            Rect(56, 175, 441, 53),
+            "Firmware control",
+            p,
+            !view.settings.heating_advice,
+            Action::HeatingAdvice(false),
+        );
+        self.button(
+            Rect(514, 175, 449, 53),
+            "Learn and advise",
+            p,
+            view.settings.heating_advice,
+            Action::HeatingAdvice(true),
+        );
+        if let Some(info) = view.heating_behaviour {
+            self.text(56, 273, info.advice, 22, p.text, 961);
+            for (index, (title, value)) in [
+                ("Estimated heat calls", info.calls.to_string()),
+                ("Calls under 3 minutes", info.short_calls.to_string()),
+                (
+                    "Median call",
+                    info.median_seconds
+                        .map_or("—".into(), |n| format!("{}m {:02}s", n / 60, n % 60)),
+                ),
+                (
+                    "Calls per heating hour",
+                    info.calls_per_heating_hour
+                        .map_or("—".into(), |n| format!("{n:.1}")),
+                ),
+                (
+                    "Below comfort floor",
+                    format!("{} min", info.below_seconds / 60),
+                ),
+                (
+                    "Burner stops during demand",
+                    if view.boiler_protocol == Some(true) && view.boiler_module == Some(true) {
+                        info.burner_stops_under_demand.to_string()
+                    } else {
+                        "—".into()
+                    },
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let x = 56 + index % 3 * 307;
+                let y = 312 + index / 3 * 66;
+                self.text(x, y, title, 17, p.muted, x + 299);
+                self.raw_text(x, y + 29, &value, 22, p.text, x + 299);
+            }
+            let samples = format!(
+                "{} {}/8   ·   {} {}/8   ·   {} {}/8",
+                self.language.translate("Cooling"),
+                info.cooling_samples,
+                self.language.translate("Warming"),
+                info.warming_samples,
+                self.language.translate("Residual heat"),
+                info.residual_samples
+            );
+            self.raw_text(56, 472, &samples, 17, p.muted, 962);
+        }
+        self.text(
+            56,
+            518,
+            "Adaptive control needs verified firmware support.",
+            17,
+            p.muted,
+            688,
+        );
+        self.button(
+            Rect(722, 485, 243, 49),
+            "Reset learning",
+            p,
+            false,
+            Action::ResetHeatingLearning,
+        );
+    }
+
     fn software_updates(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 960, 448), p.card, 26);
         self.text(56, 149, "Software updates", 30, p.text, 738);
@@ -4007,6 +4108,7 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub heating_behaviour: Option<&'a crate::heating_behaviour::Summary>,
     pub updates: Option<&'a SoftwareUpdates>,
     pub home_usage: Option<&'a [Result<crate::energy::Chart, String>; 2]>,
     pub weekday: usize,

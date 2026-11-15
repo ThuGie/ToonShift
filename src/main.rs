@@ -3,6 +3,7 @@ mod boxtalk;
 mod download;
 mod energy;
 mod feed;
+mod heating_behaviour;
 mod language;
 mod network;
 mod plugin_runtime;
@@ -129,6 +130,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         ot_comm_error: "0".into(),
     };
     let view = ui::View {
+        heating_behaviour: None,
         updates: None,
         home_usage: None,
         weekday: 0,
@@ -327,12 +329,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let (commands, updates) = thermostat::worker();
+    let mut settings = plugins::Settings::load(root);
+    let heating_inputs = heating_behaviour::Shared::default();
+    heating_inputs.lock().unwrap().enabled = settings.heating_advice;
+    let (commands, updates) = thermostat::worker(root.to_owned(), heating_inputs.clone());
     let api_events = std::sync::Arc::new(api::Events::default());
     if let Err(error) = api::start(root, commands.clone(), api_events.clone()) {
         eprintln!("ToonShift API unavailable: {error}");
     }
-    let mut settings = plugins::Settings::load(root);
+    let mut heating_behaviour = heating_behaviour::Summary::default();
     let mut backlight = device::Backlight::open().ok();
     let mut last_touch = std::time::Instant::now();
     let mut update_check_at = last_touch + Duration::from_secs(120);
@@ -365,6 +370,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (protocol_sender, protocol_receiver) = std::sync::mpsc::channel();
     let mut boiler_protocol = None;
     let mut protocol_due = std::time::Instant::now();
+    let mut calibration_due = protocol_due;
     let mut telemetry = telemetry::Readings::new();
     let (meter_sender, meter_receiver) =
         std::sync::mpsc::channel::<(advanced::MeterSources, Result<advanced::MeterFlows, String>)>(
@@ -528,7 +534,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if sources == settings.meter_sources {
                 match result {
                     Ok(values) => {
-                        for (metric, value, _) in values {
+                        for (metric, value, total) in values {
+                            if metric == plugins::Metric::Gas {
+                                heating_inputs.lock().unwrap().gas =
+                                    total.map(|value| (value, std::time::Instant::now()));
+                            }
                             if let Some(value) = value {
                                 telemetry.insert(metric, (value, std::time::Instant::now()));
                             } else {
@@ -537,6 +547,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Err(_) => {
+                        heating_inputs.lock().unwrap().gas = None;
                         for metric in sources.keys() {
                             telemetry.remove(metric);
                         }
@@ -706,16 +717,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for module in module_receiver.try_iter() {
             dirty |= boiler_module != module;
             boiler_module = module;
+            heating_inputs.lock().unwrap().module = module;
         }
         for mode in protocol_receiver.try_iter() {
             dirty |= boiler_protocol != mode;
             boiler_protocol = mode;
+            heating_inputs.lock().unwrap().open_therm = mode;
         }
         if std::time::Instant::now() >= protocol_due {
-            protocol_due = std::time::Instant::now() + Duration::from_secs(15);
+            let now = std::time::Instant::now();
+            protocol_due = now + Duration::from_secs(15);
+            let read_calibration = now >= calibration_due;
+            if read_calibration {
+                calibration_due = now + Duration::from_secs(60);
+            }
             let sender = protocol_sender.clone();
+            let heating_inputs = heating_inputs.clone();
             std::thread::spawn(move || {
                 let _ = sender.send(thermostat::boiler_protocol().ok());
+                if read_calibration {
+                    if let Some(calibration) = thermostat::calibration_offset() {
+                        heating_inputs.lock().unwrap().calibration = Some(calibration);
+                    }
+                }
             });
         }
         if feed_poll.elapsed() >= Duration::from_millis(250) {
@@ -754,6 +778,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             dirty = true;
         }
         for update in updates.try_iter() {
+            dirty |= heating_behaviour != update.heating_behaviour;
+            heating_behaviour = update.heating_behaviour;
             let new_clock = device::time();
             dirty |= status != update.status
                 || error != update.error
@@ -807,6 +833,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ui.draw(&ui::View {
+                heating_behaviour: Some(&heating_behaviour),
                 updates: Some(&update_view),
                 home_usage: home_usage.as_ref(),
                 weekday: device::weekday(),
@@ -874,6 +901,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 persist = false;
             }
             Some(Action::AutomaticUpdates(enabled)) => next.automatic_updates = enabled,
+            Some(Action::HeatingAdvice(enabled)) => next.heating_advice = enabled,
+            Some(Action::ResetHeatingLearning) => {
+                let mut inputs = heating_inputs.lock().unwrap();
+                inputs.reset = inputs.reset.wrapping_add(1);
+                persist = false;
+            }
             Some(Action::InstallUpdate) => {
                 if update_view.available.is_some() {
                     update_apply = Some(updater::Request::Install);
@@ -1395,6 +1428,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if persist {
             match next.save(root) {
                 Ok(()) => {
+                    {
+                        let mut inputs = heating_inputs.lock().unwrap();
+                        inputs.enabled = next.heating_advice;
+                        if settings.meter_sources != next.meter_sources {
+                            inputs.gas = None;
+                        }
+                    }
                     if settings.meter_sources != next.meter_sources {
                         home_usage = None;
                         home_usage_due = std::time::Instant::now();

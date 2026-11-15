@@ -41,6 +41,16 @@ pub fn boiler_protocol() -> Result<bool, String> {
         .ok_or_else(|| "Boiler mode unavailable".into())
 }
 
+pub fn calibration_offset() -> Option<i32> {
+    let replies = crate::boxtalk::thermostat(&["GetTempOffset"]).ok()?;
+    let offset = crate::boxtalk::field(&replies[0], "offset")?
+        .parse::<f64>()
+        .ok()?;
+    (-10.0..=10.0)
+        .contains(&offset)
+        .then(|| (offset * 100.0).round() as i32)
+}
+
 pub fn boiler_link_label(
     open_therm: Option<bool>,
     module: Option<bool>,
@@ -361,6 +371,7 @@ impl Work {
 }
 
 pub struct Update {
+    pub heating_behaviour: crate::heating_behaviour::Summary,
     pub status: Option<Status>,
     pub error: Option<String>,
     pub completed: bool,
@@ -491,10 +502,14 @@ fn set_scheme(mode: u8, preset: u8) -> Result<(), String> {
     Ok(())
 }
 
-pub fn worker() -> (Sender<Work>, Receiver<Update>) {
+pub fn worker(
+    root: std::path::PathBuf,
+    heating: crate::heating_behaviour::Shared,
+) -> (Sender<Work>, Receiver<Update>) {
     let (send_command, commands) = mpsc::channel::<Work>();
     let (send_update, updates) = mpsc::channel();
     std::thread::spawn(move || {
+        let mut observer = crate::heating_behaviour::Observer::new(root);
         let mut work: Option<Work> = None;
         loop {
             let command = work.as_ref().map(|work| work.command);
@@ -549,8 +564,12 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
                 Ok(value) => (Some(value), result.err()),
                 Err(error) => (None, Some(result.err().unwrap_or(error))),
             };
+            let heating_inputs = *heating.lock().unwrap();
+            let heating_behaviour =
+                observer.observe(std::time::Instant::now(), status.as_ref(), &heating_inputs);
             if send_update
                 .send(Update {
+                    heating_behaviour,
                     status,
                     error,
                     completed,

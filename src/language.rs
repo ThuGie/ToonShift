@@ -330,6 +330,36 @@ impl Language {
             "Chart" => "Grafiek",
             "Homepage layout" => "Startschermindeling",
             "Software updates" => "Software-updates",
+            "Heating behaviour" => "Verwarmingsgedrag",
+            "Firmware control" => "Firmwareregeling",
+            "Learn and advise" => "Leren en adviseren",
+            "Reset learning" => "Leergegevens wissen",
+            "Adaptive control needs verified firmware support." => {
+                "Adaptieve regeling vereist geverifieerde firmwareondersteuning."
+            }
+            "Firmware is controlling heating" => "De firmware regelt de verwarming",
+            "Waiting for valid thermostat readings" => "Wachten op geldige thermostaatmetingen",
+            "Learning advice requires a Home or Comfort schedule period" => {
+                "Advies vereist een geplande periode Thuis of Comfort"
+            }
+            "Could coast for another minute (advice only)" => {
+                "Kan nog een minuut wachten (alleen advies)"
+            }
+            "Residual heat may reach the target (advice only)" => {
+                "Restwarmte kan de doeltemperatuur bereiken (alleen advies)"
+            }
+            "Collecting qualified heating observations" => {
+                "Geschikte verwarmingsmetingen verzamelen"
+            }
+            "Estimated heat calls" => "Geschatte warmtevragen",
+            "Calls under 3 minutes" => "Vragen korter dan 3 minuten",
+            "Median call" => "Mediane duur warmtevraag",
+            "Calls per heating hour" => "Vragen per verwarmingsuur",
+            "Below comfort floor" => "Onder comfortgrens",
+            "Burner stops during demand" => "Branderstops tijdens warmtevraag",
+            "Cooling" => "Afkoeling",
+            "Warming" => "Opwarming",
+            "Residual heat" => "Restwarmte",
             "Installed version" => "Geïnstalleerde versie",
             "Available version" => "Beschikbare versie",
             "Last check" => "Laatste controle",
