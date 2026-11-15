@@ -176,7 +176,7 @@ pub enum Action {
     ResetHeatingLearning,
     RemoteAccess,
     RemoteEnable(bool),
-    RemoteAddress(std::net::Ipv4Addr),
+    RemoteStart(std::net::Ipv4Addr),
     RemotePair,
     RemoteCancel,
     RemoteApprove,
@@ -3925,7 +3925,7 @@ impl Ui {
             self.text(
                 56,
                 219,
-                "Compare the code with your phone.",
+                "3. Compare this code with your phone.",
                 24,
                 p.text,
                 968,
@@ -3967,7 +3967,30 @@ impl Ui {
                         );
                     }
                 }
-                self.text(399, 221, "Scan with ToonShift Android", 25, p.text, 964);
+                self.text(
+                    399,
+                    221,
+                    "2. Scan this code in the Android app",
+                    25,
+                    p.text,
+                    964,
+                );
+                self.text(
+                    399,
+                    304,
+                    "Use the same Wi-Fi as this Toon.",
+                    19,
+                    p.muted,
+                    964,
+                );
+                self.text(
+                    399,
+                    344,
+                    "Then compare the code on both screens.",
+                    19,
+                    p.muted,
+                    964,
+                );
                 self.text(
                     399,
                     267,
@@ -3986,21 +4009,102 @@ impl Ui {
                 return;
             }
         }
-        self.button(
-            Rect(56, 178, 305, 48),
-            if remote.enabled {
-                "Remote access on"
+        if remote.starting {
+            self.text(56, 232, "Starting secure access…", 26, p.text, 965);
+            self.button(
+                Rect(56, 455, 220, 54),
+                "Cancel",
+                p,
+                false,
+                Action::RemoteCancel,
+            );
+            return;
+        }
+        let suggested = remote
+            .address
+            .filter(|address| remote.addresses.contains(address))
+            .or_else(|| (remote.addresses.len() == 1).then(|| remote.addresses[0]));
+        if !remote.listening {
+            self.text(
+                56,
+                209,
+                "1. Enable secure access for your phone",
+                25,
+                p.text,
+                962,
+            );
+            if let Some(address) = suggested {
+                self.raw_text(56, 255, &format!("{address}:10083"), 19, p.muted, 962);
+                self.button(
+                    Rect(56, 271, 448, 56),
+                    "Enable and pair phone",
+                    p,
+                    true,
+                    Action::RemoteStart(address),
+                );
+            } else if remote.addresses.is_empty() {
+                self.text(
+                    56,
+                    273,
+                    "Connect the Toon to your home network first.",
+                    20,
+                    p.muted,
+                    962,
+                );
             } else {
-                "Remote access off"
-            },
-            p,
-            remote.enabled,
-            Action::RemoteEnable(!remote.enabled),
-        );
-        if let Some(ip) = remote.address {
-            self.raw_text(387, 209, &format!("{ip}:10083"), 21, p.text, 714);
+                self.text(
+                    56,
+                    253,
+                    "Choose the Toon's reserved LAN address",
+                    18,
+                    p.muted,
+                    963,
+                );
+                for (i, &address) in remote.addresses.iter().take(3).enumerate() {
+                    self.button(
+                        Rect(56 + i * 306, 268, 286, 54),
+                        &address.to_string(),
+                        p,
+                        false,
+                        Action::RemoteStart(address),
+                    );
+                }
+            }
+            if remote.address.is_some() && suggested.is_none() {
+                self.text(
+                    56,
+                    354,
+                    "Changing address revokes paired phones.",
+                    17,
+                    p.muted,
+                    665,
+                );
+            }
+            if remote.enabled {
+                self.button(
+                    Rect(690, 337, 271, 42),
+                    "Turn off remote access",
+                    p,
+                    false,
+                    Action::RemoteEnable(false),
+                );
+            }
         }
         if remote.listening {
+            self.button(
+                Rect(56, 178, 305, 48),
+                if remote.enabled {
+                    "Turn off remote access"
+                } else {
+                    "Remote access off"
+                },
+                p,
+                false,
+                Action::RemoteEnable(!remote.enabled),
+            );
+            if let Some(ip) = remote.address {
+                self.raw_text(387, 209, &format!("{ip}:10083"), 21, p.text, 714);
+            }
             self.button(
                 Rect(766, 178, 196, 48),
                 "Pair phone",
@@ -4009,36 +4113,19 @@ impl Ui {
                 Action::RemotePair,
             );
         }
-        if !remote.listening || !remote.enabled {
+        if remote.approved {
             self.text(
                 56,
                 261,
-                "Choose the Toon's reserved LAN address",
-                19,
-                p.muted,
-                963,
-            );
-            for (i, &address) in remote.addresses.iter().take(3).enumerate() {
-                self.button(
-                    Rect(56 + i * 306, 272, 287, 47),
-                    &address.to_string(),
-                    p,
-                    remote.address == Some(address),
-                    Action::RemoteAddress(address),
-                );
-            }
-            self.text(
-                56,
-                346,
-                "Changing address revokes paired phones.",
-                17,
-                p.muted,
+                "Phone approved. Return to the Android app.",
+                20,
+                p.accent,
                 963,
             );
         }
         self.text(
             56,
-            if remote.listening { 264 } else { 377 },
+            if remote.listening { 304 } else { 377 },
             "Paired phones",
             20,
             p.muted,
@@ -4046,7 +4133,7 @@ impl Ui {
         );
         for (i, (_, name)) in remote.phones.iter().take(8).enumerate() {
             let x = 56 + (i % 2) * 460;
-            let y = (if remote.listening { 278 } else { 388 }) + (i / 2) * 36;
+            let y = (if remote.listening { 318 } else { 388 }) + (i / 2) * 36;
             self.raw_text(x, y + 24, name, 17, p.text, x + 295);
             self.button(
                 Rect(x + 309, y + 1, 127, 32),
@@ -4318,6 +4405,8 @@ pub struct View<'a> {
 
 #[derive(Default, PartialEq, Eq)]
 pub struct RemoteView {
+    pub starting: bool,
+    pub approved: bool,
     pub enabled: bool,
     pub listening: bool,
     pub address: Option<std::net::Ipv4Addr>,

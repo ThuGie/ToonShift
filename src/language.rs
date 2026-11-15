@@ -334,6 +334,27 @@ impl Language {
             "Remote access on" => "Externe toegang aan",
             "Remote access off" => "Externe toegang uit",
             "Compare the code with your phone." => "Vergelijk de code met je telefoon.",
+            "3. Compare this code with your phone." => "3. Vergelijk deze code met je telefoon.",
+            "2. Scan this code in the Android app" => "2. Scan deze code in de Android-app",
+            "Use the same Wi-Fi as this Toon." => "Gebruik hetzelfde wifi-netwerk als deze Toon.",
+            "Then compare the code on both screens." => {
+                "Vergelijk daarna de code op beide schermen."
+            }
+            "Starting secure access…" => "Veilige toegang wordt gestart…",
+            "1. Enable secure access for your phone" => {
+                "1. Schakel veilige toegang voor je telefoon in"
+            }
+            "Enable and pair phone" => "Inschakelen en telefoon koppelen",
+            "Connect the Toon to your home network first." => {
+                "Verbind de Toon eerst met je thuisnetwerk."
+            }
+            "Turn off remote access" => "Externe toegang uitschakelen",
+            "Phone approved. Return to the Android app." => {
+                "Telefoon goedgekeurd. Ga terug naar de Android-app."
+            }
+            "Remote access could not start. Check the LAN address." => {
+                "Externe toegang kon niet starten. Controleer het LAN-adres."
+            }
             "Allow control" => "Bediening toestaan",
             "Scan with ToonShift Android" => "Scan met ToonShift Android",
             "This code expires after two minutes." => "Deze code verloopt na twee minuten.",

@@ -345,6 +345,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let mut remote_view = ui::RemoteView::default();
     let mut remote_refresh = std::time::Instant::now();
+    let mut remote_pair_deadline = None;
+    let mut remote_approved = false;
     if let Err(error) = api::start(root, commands.clone(), api_events.clone()) {
         eprintln!("ToonShift API unavailable: {error}");
     }
@@ -472,8 +474,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut hardware = advanced::State::new();
     loop {
         if ui.showing_remote() && std::time::Instant::now() >= remote_refresh {
-            remote_refresh = std::time::Instant::now() + Duration::from_secs(1);
-            let next = remote.view();
+            let now = std::time::Instant::now();
+            remote_refresh = now + Duration::from_secs(1);
+            let mut next = remote.view();
+            if let Some(deadline) = remote_pair_deadline {
+                if next.listening {
+                    if let Err(message) = remote.pair() {
+                        error = Some(message);
+                    }
+                    remote_pair_deadline = None;
+                    next = remote.view();
+                } else if now >= deadline {
+                    remote_pair_deadline = None;
+                    error = Some(
+                        settings
+                            .language
+                            .translate("Remote access could not start. Check the LAN address.")
+                            .into(),
+                    );
+                }
+            }
+            next.starting = remote_pair_deadline.is_some();
+            next.approved = remote_approved;
             dirty |= next != remote_view;
             remote_view = next;
         }
@@ -916,18 +938,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         match action {
             Some(Action::RemoteAccess) => {
                 remote_refresh = std::time::Instant::now();
+                remote_approved = false;
                 persist = false;
             }
-            Some(Action::RemoteEnable(enabled)) => next.remote_access = enabled,
+            Some(Action::RemoteEnable(enabled)) => {
+                next.remote_access = enabled;
+                remote_pair_deadline = None;
+                remote_approved = false;
+            }
+            Some(Action::RemoteStart(address)) => {
+                remote_approved = false;
+                match remote.configure(address) {
+                    Ok(()) => next.remote_access = true,
+                    Err(message) => {
+                        error = Some(message);
+                        persist = false;
+                    }
+                }
+            }
             Some(
-                action @ (Action::RemoteAddress(_)
-                | Action::RemotePair
+                action @ (Action::RemotePair
                 | Action::RemoteCancel
                 | Action::RemoteApprove
                 | Action::RemoteRevoke(_)),
             ) => {
                 let result = match action {
-                    Action::RemoteAddress(address) => remote.configure(address),
                     Action::RemotePair => remote.pair(),
                     Action::RemoteCancel => {
                         remote.cancel();
@@ -940,6 +975,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                     _ => unreachable!(),
                 };
+                remote_approved = matches!(action, Action::RemoteApprove) && result.is_ok();
+                if matches!(action, Action::RemoteCancel) {
+                    remote_pair_deadline = None;
+                }
                 error = result.err();
                 remote_refresh = std::time::Instant::now();
                 persist = false;
@@ -1478,6 +1517,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(()) => {
                     remote.enable(next.remote_access);
                     if next.remote_access != settings.remote_access {
+                        remote_refresh = std::time::Instant::now();
+                    }
+                    if matches!(action, Some(Action::RemoteStart(_))) {
+                        remote_pair_deadline =
+                            Some(std::time::Instant::now() + Duration::from_secs(12));
                         remote_refresh = std::time::Instant::now();
                     }
                     {
