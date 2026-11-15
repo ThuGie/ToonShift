@@ -1,0 +1,99 @@
+name: Build and release ToonShift
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: '1.93.0'
+  TARGET: armv7-unknown-linux-musleabihf
+  TOONSHIFT_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.TOONSHIFT_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release ref
+        if: github.ref_type == 'tag'
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          python3 -c 'import os,tomllib; assert "v"+tomllib.load(open("Cargo.toml","rb"))["package"]["version"] == os.environ["GITHUB_REF_NAME"]'
+      - name: Set up Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt,clippy --target "$TARGET"
+      - name: Check and test
+        run: |
+          cargo +"$TOOLCHAIN" fmt --all --check
+          cargo +"$TOOLCHAIN" clippy --locked --all-targets
+          cargo +"$TOOLCHAIN" clippy --locked --target "$TARGET"
+          git clone --no-checkout https://github.com/ThuGie/ToonShift-plugins.git ToonShift-plugins
+          git -C ToonShift-plugins checkout --detach 520cd5af5e9ce9c1aa953c2be023e1569ba4cedf
+          cargo +"$TOOLCHAIN" test --locked -- --include-ignored
+      - name: Build and check ARM release
+        run: |
+          cargo +"$TOOLCHAIN" build --locked --release --target "$TARGET"
+          mkdir dist
+          cp "target/$TARGET/release/toon-rust" dist/toonshift-armv7
+          readelf -h dist/toonshift-armv7 | grep -E 'Machine:[[:space:]]+ARM'
+          readelf -h dist/toonshift-armv7 | grep 'hard-float ABI'
+          if readelf -l dist/toonshift-armv7 | grep -q INTERP; then exit 1; fi
+          if readelf -d dist/toonshift-armv7 | grep -q NEEDED; then exit 1; fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: toonshift-armv7
+          path: dist/toonshift-armv7
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag' && github.ref_protected
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: stable-release
+    concurrency: stable-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: toonshift-armv7
+          path: dist
+      - name: Sign release manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.TOONSHIFT_RELEASE_SIGNING_KEY }}
+        run: |
+          umask 077
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          [[ "$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | xxd -p -c 32)" == "867a1cefbcbf02bfc8a997e0a381edde639d83ed9a1486002a55cafb4178538e" ]]
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          data = Path("dist/toonshift-armv7").read_bytes()
+          assert 0 < len(data) <= 12 * 1024 * 1024
+          manifest = dict(schema=1, version=os.environ["GITHUB_REF_NAME"][1:],
+                          commit=os.environ["TOONSHIFT_COMMIT"], target=os.environ["TARGET"],
+                          hardware="toon2", firmware=["6.4.5"], minimum_updater=1,
+                          binary="toonshift-armv7", size=len(data), sha256=hashlib.sha256(data).hexdigest())
+          Path("dist/manifest.json").write_bytes((json.dumps(manifest, separators=(",", ":")) + "\n").encode())
+          PY
+          openssl pkeyutl -sign -rawin -inkey "$key" -in dist/manifest.json -out "$key.sig"
+          xxd -p -c 64 "$key.sig" > dist/manifest.sig
+          rm -f "$key.sig"
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/toonshift-armv7 dist/manifest.json dist/manifest.sig \
+            --draft --verify-tag --generate-notes
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

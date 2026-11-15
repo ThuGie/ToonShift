@@ -13,6 +13,8 @@ mod schedule;
 mod telemetry;
 mod thermostat;
 mod ui;
+#[cfg(target_os = "linux")]
+mod updater;
 mod vacation;
 
 #[cfg(any(target_os = "linux", test))]
@@ -23,6 +25,18 @@ mod device;
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let result = match args.next().as_deref() {
+        Some("--version") => {
+            println!(
+                "ToonShift {} {}",
+                env!("CARGO_PKG_VERSION"),
+                env!("TOONSHIFT_COMMIT")
+            );
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Some("--supervise") => {
+            updater::supervise(std::path::Path::new("/mnt/data/toon-rust")).map_err(Into::into)
+        }
         Some("--preview") => preview(args).map_err(Into::into),
         Some("--probe-plugin-code") => (|| {
             let path = args.next().ok_or("Expected a plugin package path")?;
@@ -115,6 +129,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         ot_comm_error: "0".into(),
     };
     let view = ui::View {
+        updates: None,
         home_usage: None,
         weekday: 0,
         hardware: None,
@@ -320,6 +335,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut settings = plugins::Settings::load(root);
     let mut backlight = device::Backlight::open().ok();
     let mut last_touch = std::time::Instant::now();
+    let mut update_check_at = last_touch + Duration::from_secs(120);
+    let mut update_backoff = 300_u64;
+    let mut update_view = ui::SoftwareUpdates {
+        available: updater::staged(root).map(|stage| stage.version),
+        previous: root.join("update-previous").is_file(),
+        reason: updater::rollback_reason(root),
+        ..Default::default()
+    };
+    let mut update_apply = None;
+    let (update_sender, update_receiver) = std::sync::mpsc::channel::<Result<String, String>>();
+    let mut update_manual_check = false;
+    let mut update_ready = false;
     let mut ambient = false;
     let mut catalog = plugins::catalog(root);
     if settings.migrate_plugin_ids(&catalog) {
@@ -427,6 +454,61 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut feed_poll = std::time::Instant::now();
     let mut hardware = advanced::State::new();
     loop {
+        if let Ok(result) = update_receiver.try_recv() {
+            update_view.checking = false;
+            update_view.last_check = Some(device::time().1);
+            update_view.available = updater::staged(root).map(|stage| stage.version);
+            let delay = if result.is_ok() {
+                update_backoff = 300;
+                21_600
+            } else {
+                let delay = update_backoff;
+                update_backoff = (update_backoff * 2).min(21_600);
+                delay
+            };
+            update_view.message = result.unwrap_or_else(|error| error);
+            update_check_at = std::time::Instant::now() + Duration::from_secs(delay);
+            dirty = true;
+        }
+        if !update_view.checking
+            && (update_manual_check
+                || (settings.automatic_updates && std::time::Instant::now() >= update_check_at))
+        {
+            update_manual_check = false;
+            update_view.checking = true;
+            let sender = update_sender.clone();
+            std::thread::spawn(move || {
+                let _ = sender.send(updater::check(root));
+            });
+            dirty = true;
+        }
+        let automatic_apply = settings.automatic_updates
+            && update_view.available.is_some()
+            && last_touch.elapsed() >= Duration::from_secs(300);
+        if (update_apply.is_some() || automatic_apply)
+            && !update_view.checking
+            && !pending
+            && !joining
+            && !hardware.busy
+            && !extension_busy
+            && !installing
+            && !catalog_busy
+            && !vacation_busy
+            && !ui.has_unsaved_changes()
+            && !root.join("update-pending.json").exists()
+            && thermostat::freeze_work()
+        {
+            let request = update_apply.take().unwrap_or(updater::Request::Install);
+            match updater::request_restart(root, request) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    thermostat::resume_work();
+                    update_view.message = error.to_string();
+                    update_view.available = None;
+                    dirty = true;
+                }
+            }
+        }
         if let Ok((generation, result)) = extension_receiver.try_recv() {
             extension_busy = false;
             if generation == extension_generation {
@@ -725,6 +807,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ui.draw(&ui::View {
+                updates: Some(&update_view),
                 home_usage: home_usage.as_ref(),
                 weekday: device::weekday(),
                 hardware: Some(&hardware),
@@ -758,6 +841,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 location_results: location_results.as_ref(),
             });
             display.present(&ui.pixels)?;
+            if !update_ready && status.is_some() {
+                updater::ready(root)?;
+                update_ready = true;
+            }
             dirty = false;
         }
         let gesture = match touch.recv_timeout(Duration::from_millis(35)) {
@@ -782,6 +869,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             settings.tiles_per_page(),
         );
         match action {
+            Some(Action::CheckUpdates) => {
+                update_manual_check = true;
+                persist = false;
+            }
+            Some(Action::AutomaticUpdates(enabled)) => next.automatic_updates = enabled,
+            Some(Action::InstallUpdate) => {
+                if update_view.available.is_some() {
+                    update_apply = Some(updater::Request::Install);
+                    update_view.message = "Waiting to restart safely".into();
+                }
+                persist = false;
+            }
+            Some(Action::RestoreUpdate) => {
+                if update_view.previous {
+                    update_apply = Some(updater::Request::Restore);
+                    update_view.message = "Waiting to restart safely".into();
+                }
+                persist = false;
+            }
             Some(action @ (Action::OpenExtension(_) | Action::ExtensionButton(_))) => {
                 let button = match action {
                     Action::OpenExtension(index) => {

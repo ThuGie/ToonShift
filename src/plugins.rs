@@ -801,6 +801,7 @@ pub enum Appearance {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
+    pub automatic_updates: bool,
     pub home_layout: HomeLayout,
     pub meter_sources: crate::advanced::MeterSources,
     pub energy_rates: crate::energy::Rates,
@@ -823,6 +824,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            automatic_updates: true,
             home_layout: HomeLayout::Dashboard,
             theme: Theme::Midnight,
             meter_sources: Default::default(),

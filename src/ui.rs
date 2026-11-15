@@ -37,6 +37,7 @@ enum Page {
     HeatingDetails,
     Display,
     HomeLayouts,
+    SoftwareUpdates,
     Advanced,
 }
 
@@ -167,6 +168,11 @@ pub enum Action {
     Display,
     HomeLayouts,
     HomeLayout(crate::plugins::HomeLayout),
+    SoftwareUpdates,
+    CheckUpdates,
+    InstallUpdate,
+    RestoreUpdate,
+    AutomaticUpdates(bool),
     Brightness(bool, i8),
     AppearanceHour(bool, i8),
     IdleMinutes(u8),
@@ -648,6 +654,7 @@ impl Ui {
             }
             Action::Display => self.page = Page::Display,
             Action::HomeLayouts => self.page = Page::HomeLayouts,
+            Action::SoftwareUpdates => self.page = Page::SoftwareUpdates,
             Action::HeatingDetails => {
                 self.page = Page::HeatingDetails;
                 self.wifi = None;
@@ -1069,6 +1076,7 @@ impl Ui {
             Page::HeatingDetails => self.heating_details(view, &p),
             Page::Display => self.display_settings(view, &p),
             Page::HomeLayouts => self.home_layout_settings(view, &p),
+            Page::SoftwareUpdates => self.software_updates(view, &p),
             Page::Advanced => self.hardware_screen(view, &p),
         }
         if let Some(error) = view.error {
@@ -3697,6 +3705,13 @@ impl Ui {
             Action::ExportDiagnostics,
         );
         self.button(
+            Rect(371, 511, 282, 48),
+            "Software updates",
+            p,
+            false,
+            Action::SoftwareUpdates,
+        );
+        self.button(
             Rect(669, 511, 323, 48),
             "Reset preferences",
             p,
@@ -3842,6 +3857,109 @@ impl Ui {
             Action::WideTiles(!view.settings.wide_tiles),
         );
     }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.repository.is_some()
+            || self.wifi.is_some()
+            || self.editing_slot.is_some()
+            || self.copy_days.is_some()
+            || self.preset_editor.is_some()
+            || self.vacation_editor.is_some()
+            || self.vacation_remove.is_some()
+            || self.energy_rate.is_some()
+            || self.editing
+            || self.reset_preferences
+            || self.stock_confirm
+            || self.resetting_dashboard
+    }
+
+    fn software_updates(&mut self, view: &View<'_>, p: &Palette) {
+        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.text(56, 149, "Software updates", 30, p.text, 738);
+        self.button(
+            Rect(757, 113, 207, 49),
+            "Settings",
+            p,
+            false,
+            Action::Settings,
+        );
+        self.text(56, 200, "Installed version", 20, p.muted, 410);
+        self.raw_text(56, 237, env!("CARGO_PKG_VERSION"), 27, p.text, 426);
+        self.text(494, 200, "Available version", 20, p.muted, 966);
+        let Some(update) = view.updates else { return };
+        self.raw_text(
+            494,
+            237,
+            update.available.as_deref().unwrap_or("—"),
+            27,
+            p.text,
+            965,
+        );
+        self.text(56, 284, "Last check", 19, p.muted, 330);
+        self.raw_text(
+            250,
+            284,
+            update.last_check.as_deref().unwrap_or("—"),
+            20,
+            p.text,
+            965,
+        );
+        let message = if update.checking {
+            "Checking for updates…"
+        } else {
+            update.message.as_str()
+        };
+        self.text(56, 329, message, 20, p.text, 966);
+        self.text(56, 369, &update.reason, 18, p.muted, 965);
+        self.button(
+            Rect(56, 385, 398, 52),
+            if view.settings.automatic_updates {
+                "Automatic updates on"
+            } else {
+                "Automatic updates off"
+            },
+            p,
+            view.settings.automatic_updates,
+            Action::AutomaticUpdates(!view.settings.automatic_updates),
+        );
+        if !update.checking {
+            self.button(
+                Rect(56, 467, 222, 53),
+                "Check now",
+                p,
+                false,
+                Action::CheckUpdates,
+            );
+            if update.available.is_some() {
+                self.button(
+                    Rect(294, 467, 222, 53),
+                    "Install now",
+                    p,
+                    true,
+                    Action::InstallUpdate,
+                );
+            }
+            if update.previous {
+                self.button(
+                    Rect(630, 467, 334, 53),
+                    "Restore previous version",
+                    p,
+                    false,
+                    Action::RestoreUpdate,
+                );
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct SoftwareUpdates {
+    pub available: Option<String>,
+    pub last_check: Option<String>,
+    pub checking: bool,
+    pub message: String,
+    pub previous: bool,
+    pub reason: String,
 }
 
 #[cfg(test)]
@@ -3889,6 +4007,7 @@ mod dashboard_tests {
 }
 
 pub struct View<'a> {
+    pub updates: Option<&'a SoftwareUpdates>,
     pub home_usage: Option<&'a [Result<crate::energy::Chart, String>; 2]>,
     pub weekday: usize,
     pub boiler_protocol: Option<bool>,

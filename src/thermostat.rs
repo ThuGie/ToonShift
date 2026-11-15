@@ -321,19 +321,42 @@ pub struct Work {
     reply: Option<Sender<Result<(), String>>>,
 }
 
+static QUEUED_WORK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+use std::sync::atomic::Ordering::SeqCst;
+
+pub fn freeze_work() -> bool {
+    QUEUED_WORK
+        .compare_exchange(0, usize::MAX, SeqCst, SeqCst)
+        .is_ok()
+}
+
+pub fn resume_work() {
+    QUEUED_WORK.store(0, SeqCst);
+}
+
+impl Drop for Work {
+    fn drop(&mut self) {
+        QUEUED_WORK.fetch_sub(1, SeqCst);
+    }
+}
+
 impl Work {
     pub fn from_ui(command: Command) -> Self {
+        QUEUED_WORK.fetch_add(1, SeqCst);
         Self {
             command,
             reply: None,
         }
     }
 
-    pub fn from_api(command: Command, reply: Sender<Result<(), String>>) -> Self {
-        Self {
+    pub fn from_api(command: Command, reply: Sender<Result<(), String>>) -> Result<Self, ()> {
+        QUEUED_WORK
+            .fetch_update(SeqCst, SeqCst, |count| count.checked_add(1))
+            .map_err(|_| ())?;
+        Ok(Self {
             command,
             reply: Some(reply),
-        }
+        })
     }
 }
 
@@ -510,7 +533,7 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
                 )
             });
             let result = heat.map(apply).transpose();
-            let reply = work.take().and_then(|work| work.reply);
+            let reply = work.as_mut().and_then(|work| work.reply.take());
             let from_api = reply.is_some();
             let completed = heat.is_some() && !from_api;
             if let Some(reply) = reply {
@@ -539,6 +562,7 @@ pub fn worker() -> (Sender<Work>, Receiver<Update>) {
             {
                 break;
             }
+            drop(work.take());
             work = match commands.recv_timeout(Duration::from_secs(3)) {
                 Ok(work) => Some(work),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,

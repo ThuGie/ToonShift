@@ -686,7 +686,10 @@ fn read_result<T: serde::Serialize>(result: Result<T, String>) -> (&'static str,
 
 fn submit(commands: &Sender<Work>, command: Command) -> (&'static str, Value) {
     let (reply, result) = mpsc::channel();
-    if commands.send(Work::from_api(command, reply)).is_err() {
+    if Work::from_api(command, reply)
+        .and_then(|work| commands.send(work).map_err(|_| ()))
+        .is_err()
+    {
         return (
             "503 Service Unavailable",
             json!({"error":"Thermostat unavailable"}),

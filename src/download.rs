@@ -17,6 +17,8 @@ pub fn trust(root: &Path) -> io::Result<PathBuf> {
     file.write_all(include_bytes!("../assets/isrg-root-x1.pem"))?;
     file.write_all(b"\n")?;
     file.write_all(include_bytes!("../assets/isrg-root-x2.pem"))?;
+    file.write_all(b"\n")?;
+    file.write_all(include_bytes!("../assets/sectigo-e46.pem"))?;
     std::fs::rename(temporary, &path)?;
     Ok(path)
 }
