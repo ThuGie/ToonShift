@@ -21,6 +21,7 @@ curl -H "Authorization: Bearer $TOONSHIFT_TOKEN" http://127.0.0.1:18082/v1/statu
 | `GET /v1/events` | — | Authenticated Server-Sent Events with `status` or `unavailable` events |
 | `GET /v1/events?telemetry=1` | — | Includes `telemetry` snapshots using the same fields as `/v1/telemetry`. A reading becoming stale is reported within the keepalive interval |
 | `GET /v1/telemetry` | — | Live room temperature, relative humidity, electricity demand and gas flow. Each available reading includes its value, unit and age in seconds. Missing or expired readings are null |
+| `GET /v1/energy/live` | — | Live `electricity` in W and `gas` in L/h, with `value`, `unit` and `age_seconds` per available reading |
 | `PUT /v1/setpoint` | `{"centi_celsius":2050}` | Sets the target to 20.50°C. Range is 600–3000 in hundredths of a degree Celsius |
 | `PUT /v1/schedule` | `{"enabled":true}` | Enables or disables the stored program |
 | `GET /v1/program` | — | Weekly periods with `start` and `end` as minute offsets from Sunday midnight and numeric `preset` |
@@ -44,6 +45,8 @@ curl -H "Authorization: Bearer $TOONSHIFT_TOKEN" http://127.0.0.1:18082/v1/statu
 Success returns HTTP 200. Writes return `{"result":"ok"}` when the firmware acknowledges the command. Read status to confirm the effective state. Missing or invalid tokens get 401, unknown routes get 404, invalid input gets 422, firmware write failures get 502, service failures get 503, and a 504 means the write outcome is unknown.
 
 The event stream sends the latest full status upon connection and again when status changes. `unavailable` carries an empty JSON object. The stream sends keepalive comments every ten seconds of inactivity, closes after about five minutes, and supports four simultaneous subscriptions. Reconnect using the bearer token to get the current snapshot. The stream does not retain historical events.
+
+From ToonShift 0.2.8, paired phones can use `GET /v1/energy/live` and `GET /v1/energy?meter=…&period=…` through pinned HTTPS on port 10083. Meter values are `electricity`, `gas`, `export`, `solar` and `water`. The rolling periods `hour`, `day`, `week`, `month` and `year` cover one hour, 24 hours, 7 days, 31 days and 365 days. Hourly history contains flow averages and has a null total. Other periods report consumption or production quantities and sum recorded intervals only. The `bars` array contains null for missing intervals, and `partial_bars` flags incomplete buckets. `from` and `to` are Unix seconds. Electricity and gas history honor the source selected on the Toon.
 
 Rotate the token by moving the token file out of the device's application directory, restarting ToonShift, and provisioning the new token to clients. The existing token remains active until the process restarts. Keep the SSH tunnel local to the client and use SSH for transport encryption. This API does not configure the firmware's separate web listeners.
 
