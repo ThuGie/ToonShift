@@ -22,6 +22,8 @@ const LISTEN: &str = "127.0.0.1:10082";
 pub struct Events {
     snapshot: Mutex<Snapshot>,
     changed: Condvar,
+    energy_root: Option<std::path::PathBuf>,
+    energy_read: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -33,6 +35,29 @@ struct Snapshot {
 }
 
 impl Events {
+    pub fn with_energy(root: &std::path::Path) -> Self {
+        Self {
+            energy_root: Some(root.to_owned()),
+            ..Self::default()
+        }
+    }
+
+    fn energy(
+        &self,
+        meter: crate::energy::Meter,
+        period: crate::energy::Period,
+    ) -> Result<crate::energy::Chart, String> {
+        if let Some(root) = &self.energy_root {
+            let settings = crate::plugins::Settings::load(root);
+            let source = meter
+                .selected_metric()
+                .and_then(|metric| settings.meter_sources.get(&metric));
+            crate::energy::load_selected(root, meter, period, source.map(String::as_str))
+        } else {
+            crate::energy::load(meter, period)
+        }
+    }
+
     pub fn publish_readings(&self, readings: &crate::telemetry::Readings) {
         let mut snapshot = self.snapshot.lock().unwrap();
         if snapshot.readings != *readings {
@@ -527,6 +552,10 @@ pub(crate) fn handle_with(
         ("GET", "/v1/events") if query.is_empty() => Ok(("event-stream", json!(token))),
         ("GET", "/v1/events") if query == "telemetry=1" => Ok(("telemetry-stream", json!(token))),
         ("GET", "/v1/telemetry") if query.is_empty() => Ok(("200 OK", events.readings())),
+        ("GET", "/v1/energy/live") if query.is_empty() => {
+            let readings = events.readings();
+            Ok(("200 OK", json!({"electricity":readings["electricity"],"gas":readings["gas"]})))
+        }
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
             Err(_) => (
@@ -618,7 +647,10 @@ pub(crate) fn handle_with(
             }
             Ok(match (meter, period) {
                 (Some(meter), Some(period)) => {
-                    let result = crate::energy::load(meter, period);
+                    let Ok(_reading) = events.energy_read.try_lock() else {
+                        return Ok(("503 Service Unavailable", json!({"error":"Energy history is busy. Try again."})));
+                    };
+                    let result = events.energy(meter, period);
                     match result {
                         Ok(chart) if route == "/v1/energy.csv" => ("energy-csv", json!(chart.csv())),
                         result => read_result(result),

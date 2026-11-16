@@ -572,16 +572,21 @@ fn valid_secret(value: &str) -> bool {
 }
 
 fn allowed(method: &str, path: &str) -> bool {
-    matches!(
-        (method, path),
-        (
-            "GET",
-            "/v1/status" | "/v1/events" | "/v1/presets" | "/v1/program?revision=1"
-        ) | (
-            "PUT",
-            "/v1/setpoint" | "/v1/preset" | "/v1/hold" | "/v1/schedule" | "/v1/program"
+    (method == "GET" && path.starts_with("/v1/energy?"))
+        || matches!(
+            (method, path),
+            (
+                "GET",
+                "/v1/status"
+                    | "/v1/events"
+                    | "/v1/presets"
+                    | "/v1/program?revision=1"
+                    | "/v1/energy/live"
+            ) | (
+                "PUT",
+                "/v1/setpoint" | "/v1/preset" | "/v1/hold" | "/v1/schedule" | "/v1/program"
+            )
         )
-    )
 }
 
 #[cfg(test)]
@@ -648,6 +653,10 @@ mod tests {
         );
         assert!(remote.approve().is_err());
         assert!(allowed("PUT", "/v1/hold"));
+        assert!(allowed("GET", "/v1/energy?meter=gas&period=week"));
+        assert!(allowed("GET", "/v1/energy/live"));
+        assert!(!allowed("PUT", "/v1/energy/live"));
+        assert!(!allowed("GET", "/v1/energy.csv?meter=gas&period=week"));
         assert!(!allowed("GET", "/v1/events?telemetry=1"));
         assert!(!allowed("GET", "/v1/diagnostics"));
         assert!(!allowed("PUT", "/v1/presets"));

@@ -372,7 +372,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let heating_inputs = heating_behaviour::Shared::default();
     heating_inputs.lock().unwrap().enabled = settings.heating_advice;
     let (commands, updates) = thermostat::worker(root.to_owned(), heating_inputs.clone());
-    let api_events = std::sync::Arc::new(api::Events::default());
+    let api_events = std::sync::Arc::new(api::Events::with_energy(root));
     let remote = remote::Remote::start(
         root,
         commands.clone(),
