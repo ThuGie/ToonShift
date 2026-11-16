@@ -614,7 +614,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if sources == settings.meter_sources {
                 match result {
                     Ok(values) => {
-                        for (metric, value, total) in values {
+                        for advanced::MeterReading {
+                            metric,
+                            flow: value,
+                            total,
+                            ..
+                        } in values
+                        {
                             if metric == plugins::Metric::Gas {
                                 heating_inputs.lock().unwrap().gas =
                                     total.map(|value| (value, std::time::Instant::now()));
@@ -647,11 +653,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::spawn(move || {
                 let result = advanced::meter_flows(&sources);
                 if let Ok(readings) = &result {
-                    for &(metric, flow, total) in readings {
+                    for &advanced::MeterReading {
+                        metric,
+                        flow,
+                        total,
+                        combined_import,
+                    } in readings
+                    {
                         if let Some(source) = sources.get(&metric) {
-                            if let Err(error) =
-                                energy::record_selected(root, metric, source, flow, total)
-                            {
+                            if let Err(error) = energy::record_selected(
+                                root,
+                                metric,
+                                source,
+                                combined_import,
+                                flow,
+                                total,
+                            ) {
                                 eprintln!("Could not record meter history: {error}");
                             }
                         }

@@ -40,6 +40,7 @@ pub struct MeterChannel {
     pub name: &'static str,
     pub flow: Option<f64>,
     pub total: Option<f64>,
+    import_tariff: Option<u8>,
 }
 
 fn channel(entry: &Value, name: &'static str, flow: &str, total: &str) -> Option<MeterChannel> {
@@ -57,11 +58,42 @@ fn channel(entry: &Value, name: &'static str, flow: &str, total: &str) -> Option
         name,
         flow: number(flow),
         total: number(total),
+        import_tariff: match entry["type"].as_str() {
+            Some("HAE_METER_v3_4") => Some(0),
+            Some("HAE_METER_v3_6") => Some(1),
+            _ => None,
+        },
     })
 }
 
 pub type MeterSources = std::collections::HashMap<crate::plugins::Metric, String>;
-pub type MeterFlows = Vec<(crate::plugins::Metric, Option<f64>, Option<f64>)>;
+pub struct MeterReading {
+    pub metric: crate::plugins::Metric,
+    pub flow: Option<f64>,
+    pub total: Option<f64>,
+    pub combined_import: bool,
+}
+
+pub type MeterFlows = Vec<MeterReading>;
+
+fn import_reading(
+    channels: &[MeterChannel],
+    selected: &MeterChannel,
+) -> Option<(Option<f64>, Option<f64>)> {
+    let tariff = selected.import_tariff?;
+    let other = channels
+        .iter()
+        .find(|channel| channel.import_tariff == Some(1 - tariff))?;
+    let sum = |a: Option<f64>, b: Option<f64>| {
+        a.zip(b)
+            .map(|(a, b)| a + b)
+            .filter(|sum| sum.is_finite() && *sum >= 0.0)
+    };
+    Some((
+        sum(selected.flow, other.flow),
+        sum(selected.total, other.total),
+    ))
+}
 
 pub fn meter_flows(sources: &MeterSources) -> Result<MeterFlows, String> {
     use crate::plugins::Metric;
@@ -74,16 +106,34 @@ pub fn meter_flows(sources: &MeterSources) -> Result<MeterFlows, String> {
                 Metric::Gas => "Gas",
                 _ => return None,
             };
-            let channel = inventory
+            let selected = inventory
                 .iter()
                 .filter(|node| node.connected == Some(true))
-                .flat_map(|node| &node.channels)
-                .find(|channel| channel.id == *id && channel.name == kind);
-            Some((
+                .find_map(|node| {
+                    node.channels
+                        .iter()
+                        .find(|channel| channel.id == *id && channel.name == kind)
+                        .map(|channel| (node, channel))
+                });
+            let mut reading = MeterReading {
                 metric,
-                channel.and_then(|c| c.flow),
-                channel.and_then(|c| c.total),
-            ))
+                flow: None,
+                total: None,
+                combined_import: false,
+            };
+            if let Some((node, channel)) = selected {
+                if node.kind == "HAE_METER_v3" {
+                    if let Some((flow, total)) = import_reading(&node.channels, channel) {
+                        reading.flow = flow;
+                        reading.total = total;
+                        reading.combined_import = true;
+                        return Some(reading);
+                    }
+                }
+                reading.flow = channel.flow;
+                reading.total = channel.total;
+            }
+            Some(reading)
         })
         .collect())
 }
@@ -588,6 +638,34 @@ pub fn pair(mode: PairMode, request: PairRequest) -> Result<PairStep, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn p1_import_follows_both_tariffs_and_excludes_export() {
+        let channels: Vec<_> = [("4", 506.0, 1000.0), ("5", 60.0, 400.0), ("6", 0.0, 2000.0)]
+            .into_iter()
+            .map(|(endpoint, flow, total)| {
+                super::channel(
+                    &serde_json::json!({
+                        "uuid": endpoint, "type": format!("HAE_METER_v3_{endpoint}"),
+                        "flow": flow, "total": total,
+                    }),
+                    "Electricity",
+                    "flow",
+                    "total",
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            super::import_reading(&channels, &channels[0]),
+            Some((Some(506.0), Some(3000.0)))
+        );
+        assert_eq!(
+            super::import_reading(&channels, &channels[2]),
+            Some((Some(506.0), Some(3000.0)))
+        );
+        assert_eq!(super::import_reading(&channels, &channels[1]), None);
+    }
+
     #[test]
     fn reads_the_final_status_in_the_firmware_stop_response() {
         let response =

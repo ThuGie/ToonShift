@@ -516,6 +516,7 @@ pub fn record_selected(
     root: &std::path::Path,
     metric: crate::plugins::Metric,
     source: &str,
+    combined_import: bool,
     flow: Option<f64>,
     total: Option<f64>,
 ) -> std::io::Result<()> {
@@ -531,6 +532,13 @@ pub fn record_selected(
         return Ok(());
     }
     let time = now - now % METER_STEP;
+    let combined_source;
+    let source = if combined_import {
+        combined_source = format!("{source}:combined-import-v1");
+        combined_source.as_str()
+    } else {
+        source
+    };
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -583,7 +591,21 @@ pub fn load_selected(
     let end = now - now % METER_STEP;
     let start = end.saturating_sub(window);
     let mut readings = Samples::new();
-    match std::fs::File::open(selected_path(root, metric, source)) {
+    let archive = if meter == Meter::Electricity {
+        match std::fs::File::open(selected_path(
+            root,
+            metric,
+            &format!("{source}:combined-import-v1"),
+        )) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                std::fs::File::open(selected_path(root, metric, source))
+            }
+            result => result,
+        }
+    } else {
+        std::fs::File::open(selected_path(root, metric, source))
+    };
+    match archive {
         Ok(file) => {
             for line in BufReader::new(file).lines() {
                 let line = line.map_err(|e| e.to_string())?;
