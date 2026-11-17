@@ -248,6 +248,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gas_window_reports_zero_after_the_last_counter_change_leaves_the_window() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut window = GasWindow::default();
+        for second in (0..=610).step_by(10) {
+            let result = window.observe(
+                start + Duration::from_secs(second),
+                Some(if second < 300 { 100.0 } else { 104.0 }),
+            );
+            match second {
+                300 => assert_eq!(result, Some((4.0, 300))),
+                600 => assert_eq!(result, Some((0.0, 300))),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            window.observe(start + Duration::from_secs(620), Some(1.0)),
+            None
+        );
+        assert_eq!(
+            window.observe(start + Duration::from_secs(670), Some(1.0)),
+            None
+        );
+    }
+
+    #[test]
     fn csv_preserves_zero_and_missing_buckets_with_chart_boundaries() {
         let chart = Chart {
             bars: vec![Some(0.0), None, Some(1.25)],
@@ -491,6 +517,36 @@ fn build_chart(
 
 const METER_STEP: u64 = 300;
 
+#[derive(Default)]
+pub struct GasWindow {
+    samples: std::collections::VecDeque<(std::time::Instant, f64)>,
+}
+
+impl GasWindow {
+    pub fn observe(&mut self, now: std::time::Instant, counter: Option<f64>) -> Option<(f64, u64)> {
+        let Some(counter) = counter.filter(|value| value.is_finite() && *value >= 0.0) else {
+            self.samples.clear();
+            return None;
+        };
+        if self.samples.back().is_some_and(|(at, previous)| {
+            counter < *previous || now.duration_since(*at).as_secs() > 35
+        }) {
+            self.samples.clear();
+        }
+        self.samples.push_back((now, counter));
+        while self
+            .samples
+            .get(1)
+            .is_some_and(|(at, _)| now.duration_since(*at).as_secs() >= METER_STEP)
+        {
+            self.samples.pop_front();
+        }
+        let &(at, baseline) = self.samples.front()?;
+        let seconds = now.duration_since(at).as_secs();
+        (seconds >= METER_STEP).then_some((counter - baseline, seconds))
+    }
+}
+
 impl Meter {
     pub fn selected_metric(self) -> Option<crate::plugins::Metric> {
         use crate::plugins::Metric;
@@ -621,17 +677,26 @@ pub fn load_selected(
                 if !(start..=end).contains(&time) {
                     continue;
                 }
-                let value = (if period.flow() { flow } else { total })
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite() && (period.flow() || *x >= 0.0));
+                let value = (if period.flow() && meter != Meter::Gas {
+                    flow
+                } else {
+                    total
+                })
+                .parse::<f64>()
+                .ok()
+                .filter(|x| x.is_finite() && (period.flow() || *x >= 0.0));
                 readings.insert(time, value);
             }
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
-    if !period.flow() {
+    if meter == Meter::Gas && period.flow() {
+        readings = changes(readings, METER_STEP);
+        for value in readings.values_mut().flatten() {
+            *value *= 3_600_000.0 / METER_STEP as f64;
+        }
+    } else if !period.flow() {
         readings = changes(readings, METER_STEP);
     }
     Ok(build_chart(

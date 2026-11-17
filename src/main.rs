@@ -425,6 +425,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::mpsc::channel::<(advanced::MeterSources, Result<advanced::MeterFlows, String>)>(
         );
     let mut meter_busy = false;
+    let mut gas_window = energy::GasWindow::default();
     let mut next_meter_poll = std::time::Instant::now();
     let mut status = None;
     let mut schedule = None;
@@ -622,8 +623,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         } in values
                         {
                             if metric == plugins::Metric::Gas {
+                                let now = std::time::Instant::now();
+                                api_events.publish_gas_window(gas_window.observe(now, total), now);
                                 heating_inputs.lock().unwrap().gas =
-                                    total.map(|value| (value, std::time::Instant::now()));
+                                    total.map(|value| (value, now));
                             }
                             if let Some(value) = value {
                                 telemetry.insert(metric, (value, std::time::Instant::now()));
@@ -633,6 +636,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Err(_) => {
+                        gas_window = energy::GasWindow::default();
+                        api_events.publish_gas_window(None, std::time::Instant::now());
                         heating_inputs.lock().unwrap().gas = None;
                         for metric in sources.keys() {
                             telemetry.remove(metric);
@@ -1635,6 +1640,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     if settings.meter_sources != next.meter_sources {
+                        if settings.meter_sources.get(&plugins::Metric::Gas)
+                            != next.meter_sources.get(&plugins::Metric::Gas)
+                        {
+                            gas_window = energy::GasWindow::default();
+                            api_events.publish_gas_window(None, std::time::Instant::now());
+                        }
                         home_usage = None;
                         home_usage_due = std::time::Instant::now();
                     }
