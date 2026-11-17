@@ -225,7 +225,7 @@ impl Language {
             "Gas rate (€/m³)" => "Gastarief (€/m³)",
             "Estimated cost" => "Geschatte kosten",
             "Not set" => "Niet ingesteld",
-            "Enter a rate from 0 to 99.999." => "Voer een tarief in van 0 tot 99,999.",
+            "Enter a rate from 0 to 99.99999." => "Voer een tarief in van 0 tot 99,99999.",
             "Save an empty field to clear the rate." => {
                 "Sla een leeg veld op om het tarief te wissen."
             }

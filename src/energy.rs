@@ -88,12 +88,64 @@ pub struct Chart {
     pub(crate) tariff_usage: [Option<f64>; 2],
 }
 
+pub const RATE_SCALE: u32 = 100_000;
+
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
-#[serde(default)]
+#[serde(from = "StoredRates", into = "StoredRates")]
 pub struct Rates {
     pub standard: Option<u32>,
     pub off_peak: Option<u32>,
     pub gas: Option<u32>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+#[derive(Default)]
+struct StoredRates {
+    standard: Option<u32>,
+    off_peak: Option<u32>,
+    gas: Option<u32>,
+    standard_exact: Option<u32>,
+    off_peak_exact: Option<u32>,
+    gas_exact: Option<u32>,
+}
+
+impl From<StoredRates> for Rates {
+    fn from(stored: StoredRates) -> Self {
+        let convert = |legacy: Option<u32>, exact: Option<u32>| {
+            exact.or_else(|| legacy.and_then(|rate| rate.checked_mul(RATE_SCALE / 1000)))
+        };
+        Self {
+            standard: convert(stored.standard, stored.standard_exact),
+            off_peak: convert(stored.off_peak, stored.off_peak_exact),
+            gas: convert(stored.gas, stored.gas_exact),
+        }
+    }
+}
+
+impl From<Rates> for StoredRates {
+    fn from(rates: Rates) -> Self {
+        let legacy = |rate: Option<u32>| rate.map(|value| value.saturating_add(50) / 100);
+        Self {
+            standard: legacy(rates.standard),
+            off_peak: legacy(rates.off_peak),
+            gas: legacy(rates.gas),
+            standard_exact: rates.standard,
+            off_peak_exact: rates.off_peak,
+            gas_exact: rates.gas,
+        }
+    }
+}
+
+impl Rates {
+    pub fn flat_price(self, meter: Meter) -> Option<f64> {
+        let rate = match meter {
+            Meter::Electricity if self.standard == self.off_peak => self.standard,
+            Meter::Gas => self.gas,
+            _ => None,
+        }?;
+        Some(f64::from(rate) / f64::from(RATE_SCALE))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -132,23 +184,23 @@ impl Rate {
         } else {
             let (whole, fraction) = input.split_once(['.', ',']).unwrap_or((input, ""));
             if whole.is_empty()
-                || fraction.len() > 3
+                || fraction.len() > 5
                 || !whole
                     .bytes()
                     .chain(fraction.bytes())
                     .all(|c| c.is_ascii_digit())
             {
-                return Err("Enter a rate from 0 to 99.999.");
+                return Err("Enter a rate from 0 to 99.99999.");
             }
             let whole: u32 = whole
                 .parse()
-                .map_err(|_| "Enter a rate from 0 to 99.999.")?;
+                .map_err(|_| "Enter a rate from 0 to 99.99999.")?;
             if whole > 99 {
-                return Err("Enter a rate from 0 to 99.999.");
+                return Err("Enter a rate from 0 to 99.99999.");
             }
             let fraction =
-                fraction.parse::<u32>().unwrap_or(0) * 10_u32.pow(3 - fraction.len() as u32);
-            Some(whole * 1000 + fraction)
+                fraction.parse::<u32>().unwrap_or(0) * 10_u32.pow(5 - fraction.len() as u32);
+            Some(whole * RATE_SCALE + fraction)
         };
         *self.field(rates) = value;
         Ok(())
@@ -181,16 +233,18 @@ impl Chart {
     }
 
     pub fn estimated_cost(&self, meter: Meter, rates: Rates) -> Option<f64> {
+        if let Some(price) = rates.flat_price(meter) {
+            return Some(self.total? * price);
+        }
         match meter {
             Meter::Electricity => {
                 let [standard, off_peak] = self.tariff_usage;
                 Some(
                     (standard? * f64::from(rates.standard?)
                         + off_peak? * f64::from(rates.off_peak?))
-                        / 1000.0,
+                        / f64::from(RATE_SCALE),
                 )
             }
-            Meter::Gas => Some(self.total? * f64::from(rates.gas?) / 1000.0),
             _ => None,
         }
     }
@@ -297,7 +351,7 @@ mod tests {
         Rate::Standard.save(&mut rates, "0,355").unwrap();
         Rate::OffPeak.save(&mut rates, "0.25").unwrap();
         Rate::Gas.save(&mut rates, "1.2").unwrap();
-        assert!(Rate::Gas.save(&mut rates, "1.2345").is_err());
+        assert!(Rate::Gas.save(&mut rates, "1.234567").is_err());
         let chart = Chart {
             bars: Vec::new(),
             partial_bars: Vec::new(),
@@ -309,9 +363,31 @@ mod tests {
             tariff_usage: [Some(2.0), Some(1.0)],
         };
         assert_eq!(chart.estimated_cost(Meter::Electricity, rates), Some(0.96));
-        assert_eq!(rates.gas, Some(1200));
+        assert_eq!(rates.gas, Some(120_000));
         Rate::OffPeak.save(&mut rates, "").unwrap();
         assert_eq!(chart.estimated_cost(Meter::Electricity, rates), None);
+    }
+
+    #[test]
+    fn exact_rates_round_trip_and_flat_cost_uses_the_combined_total() {
+        let mut rates: Rates = serde_json::from_str(r#"{"standard":238,"gas":1164}"#).unwrap();
+        assert_eq!(rates.standard, Some(23_800));
+        Rate::Standard.save(&mut rates, "0,23780").unwrap();
+        Rate::OffPeak.save(&mut rates, "0.23780").unwrap();
+        Rate::Gas.save(&mut rates, "1,16386").unwrap();
+        let rates: Rates = serde_json::from_str(&serde_json::to_string(&rates).unwrap()).unwrap();
+        assert_eq!(rates.gas, Some(116_386));
+        let chart = Chart {
+            bars: vec![Some(10.0)],
+            partial_bars: vec![true],
+            unit: "kWh",
+            total: Some(10.0),
+            partial: true,
+            from: 0,
+            to: 3600,
+            tariff_usage: [None; 2],
+        };
+        assert_eq!(chart.estimated_cost(Meter::Electricity, rates), Some(2.378));
     }
 
     #[test]

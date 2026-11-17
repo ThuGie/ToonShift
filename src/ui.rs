@@ -669,7 +669,11 @@ impl Ui {
                 self.energy_rate_error = None;
                 self.repository = Some(TextEntry {
                     text: value.map_or_else(String::new, |value| {
-                        format!("{}.{:03}", value / 1000, value % 1000)
+                        format!(
+                            "{}.{:05}",
+                            value / crate::energy::RATE_SCALE,
+                            value % crate::energy::RATE_SCALE
+                        )
                     }),
                     ..TextEntry::default()
                 });
@@ -3005,7 +3009,13 @@ impl Ui {
                 let value = rate.value(view.settings.energy_rates);
                 let label = value.map_or_else(
                     || self.language.translate("Not set").to_owned(),
-                    |value| format!("€{}.{:03}", value / 1000, value % 1000),
+                    |value| {
+                        format!(
+                            "€{}.{:05}",
+                            value / crate::energy::RATE_SCALE,
+                            value % crate::energy::RATE_SCALE
+                        )
+                    },
                 );
                 self.text(56, 218 + index * 76, rate.title(), 24, p.text, 720);
                 self.button(

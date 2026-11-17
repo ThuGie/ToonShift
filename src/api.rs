@@ -59,15 +59,16 @@ impl Events {
         &self,
         meter: crate::energy::Meter,
         period: crate::energy::Period,
-    ) -> Result<crate::energy::Chart, String> {
+    ) -> Result<(crate::energy::Chart, crate::energy::Rates), String> {
         if let Some(root) = &self.energy_root {
             let settings = crate::plugins::Settings::load(root);
             let source = meter
                 .selected_metric()
                 .and_then(|metric| settings.meter_sources.get(&metric));
             crate::energy::load_selected(root, meter, period, source.map(String::as_str))
+                .map(|chart| (chart, settings.energy_rates))
         } else {
-            crate::energy::load(meter, period)
+            crate::energy::load(meter, period).map(|chart| (chart, Default::default()))
         }
     }
 
@@ -672,8 +673,14 @@ pub(crate) fn handle_with(
                     };
                     let result = events.energy(meter, period);
                     match result {
-                        Ok(chart) if route == "/v1/energy.csv" => ("energy-csv", json!(chart.csv())),
-                        result => read_result(result),
+                        Ok((chart, _)) if route == "/v1/energy.csv" => ("energy-csv", json!(chart.csv())),
+                        Ok((chart, rates)) => {
+                            let mut response = json!(chart);
+                            response["estimated_cost_eur"] = json!(chart.estimated_cost(meter, rates));
+                            response["price_eur_per_unit"] = json!(rates.flat_price(meter));
+                            ("200 OK", response)
+                        }
+                        Err(error) => read_result::<Value>(Err(error)),
                     }
                 }
                 _ => bad_request(),

@@ -40,6 +40,26 @@ fn main() -> std::process::ExitCode {
         Some("--supervise") => {
             updater::supervise(std::path::Path::new("/mnt/data/toon-rust")).map_err(Into::into)
         }
+        #[cfg(target_os = "linux")]
+        Some("--set-energy-rates") => (|| {
+            use energy::Rate;
+            let root = std::path::Path::new("/mnt/data/toon-rust");
+            let mut settings: plugins::Settings =
+                serde_json::from_slice(&std::fs::read(root.join("settings.json"))?)?;
+            for rate in Rate::ALL {
+                rate.save(
+                    &mut settings.energy_rates,
+                    &args.next().ok_or(
+                        "Expected standard electricity, off-peak electricity and gas rates",
+                    )?,
+                )?;
+            }
+            if args.next().is_some() {
+                return Err("Expected exactly three rates".into());
+            }
+            settings.save(root)?;
+            Ok(())
+        })(),
         Some("--preview") => preview(args).map_err(Into::into),
         Some("--probe-plugin-code") => (|| {
             let path = args.next().ok_or("Expected a plugin package path")?;
