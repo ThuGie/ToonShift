@@ -237,11 +237,15 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         Some("settings") => {
             ui.hit(750, 40);
         }
-        Some("energy" | "energy-selected" | "energy-table") => {
+        Some("energy" | "energy-selected" | "energy-table" | "energy-cost") => {
             ui.hit(560, 40);
             ui.draw(&view);
             if page.as_deref() == Some("energy-table") {
                 ui.hit(685, 195);
+            } else if page.as_deref() == Some("energy-cost") {
+                ui.hit(640, 195);
+                ui.draw(&view);
+                ui.hit(696, 400);
             } else if page.as_deref() == Some("energy-selected") {
                 ui.hit(696, 400);
             }

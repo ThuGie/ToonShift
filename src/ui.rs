@@ -161,7 +161,7 @@ pub enum Action {
     Language(crate::language::Language),
     Energy(crate::energy::Meter, crate::energy::Period),
     EnergyBucket(usize),
-    EnergyTable(bool),
+    EnergyDisplay(EnergyDisplay),
     EnergyRows(usize),
     EnergyRates,
     EditEnergyRate(crate::energy::Rate, Option<u32>),
@@ -283,7 +283,7 @@ pub struct Ui {
     vacation_remove: Option<usize>,
     energy: (crate::energy::Meter, crate::energy::Period),
     energy_bucket: Option<usize>,
-    energy_table: bool,
+    energy_display: EnergyDisplay,
     energy_page: usize,
     energy_rate: Option<crate::energy::Rate>,
     energy_rate_error: Option<&'static str>,
@@ -337,7 +337,7 @@ impl Ui {
                 crate::energy::Period::Day,
             ),
             energy_bucket: None,
-            energy_table: false,
+            energy_display: EnergyDisplay::Usage,
             energy_page: 0,
             energy_rate: None,
             energy_rate_error: None,
@@ -724,7 +724,7 @@ impl Ui {
             Action::EnergyBucket(index) => {
                 self.energy_bucket = (self.energy_bucket != Some(index)).then_some(index);
             }
-            Action::EnergyTable(table) => self.energy_table = table,
+            Action::EnergyDisplay(display) => self.energy_display = display,
             Action::EnergyRows(page) => self.energy_page = page,
             Action::RepositoryEntry => self.repository = Some(TextEntry::default()),
             Action::CloseRepository => self.repository = None,
@@ -2676,6 +2676,14 @@ impl Ui {
     fn energy(&mut self, view: &View<'_>, p: &Palette) {
         use crate::energy::{Meter, Period};
         let (meter, period) = self.energy;
+        let price = (!period.flow())
+            .then(|| view.settings.energy_rates.flat_price(meter))
+            .flatten();
+        let display = if self.energy_display == EnergyDisplay::Cost && price.is_none() {
+            EnergyDisplay::Usage
+        } else {
+            self.energy_display
+        };
         self.panel(Rect(32, 96, 960, 459), p.card, 26);
         for (index, choice) in Meter::ALL.into_iter().enumerate() {
             self.button(
@@ -2696,18 +2704,27 @@ impl Ui {
             );
         }
         self.button(
-            Rect(535, 175, 95, 44),
+            Rect(527, 175, 72, 44),
             "Chart",
             p,
-            !self.energy_table,
-            Action::EnergyTable(false),
+            display == EnergyDisplay::Usage,
+            Action::EnergyDisplay(EnergyDisplay::Usage),
         );
+        if price.is_some() {
+            self.button(
+                Rect(606, 175, 67, 44),
+                "Cost",
+                p,
+                display == EnergyDisplay::Cost,
+                Action::EnergyDisplay(EnergyDisplay::Cost),
+            );
+        }
         self.button(
-            Rect(638, 175, 95, 44),
+            Rect(680, 175, 67, 44),
             "Table",
             p,
-            self.energy_table,
-            Action::EnergyTable(true),
+            display == EnergyDisplay::Table,
+            Action::EnergyDisplay(EnergyDisplay::Table),
         );
         self.button(
             Rect(758, 175, 206, 44),
@@ -2771,17 +2788,15 @@ impl Ui {
             self.text(70, 415, "Estimated cost", 16, p.muted, 271);
             self.raw_text(70, 449, &format!("€{cost:.2}"), 29, p.accent, 272);
         }
-        if period != Period::Hour {
-            if let Some(price) = view.settings.energy_rates.flat_price(meter) {
-                self.raw_text(
-                    70,
-                    513,
-                    &format!("€{price:.5} / {}", meter.unit(period)),
-                    16,
-                    p.muted,
-                    269,
-                );
-            }
+        if let Some(price) = price {
+            self.raw_text(
+                70,
+                513,
+                &format!("€{price:.5} / {}", meter.unit(period)),
+                16,
+                p.muted,
+                269,
+            );
         }
         if recorded > 0 && chart.is_some_and(|chart| chart.partial) {
             self.text(70, 480, "Incomplete readings", 15, p.muted, 272);
@@ -2795,8 +2810,8 @@ impl Ui {
             self.text(311, 278, message, 21, p.muted, 959);
             return;
         };
-        if self.energy_table {
-            self.energy_table(chart, p);
+        if display == EnergyDisplay::Table {
+            self.energy_table(chart, price, p);
             return;
         }
         if recorded == 0 {
@@ -2818,24 +2833,39 @@ impl Ui {
             );
             return;
         }
-        self.energy_chart(chart, p);
+        self.energy_chart(chart, price, display == EnergyDisplay::Cost, p);
     }
 
-    fn energy_chart(&mut self, chart: &crate::energy::Chart, p: &Palette) {
-        let min = chart.bars.iter().copied().flatten().fold(0.0, f64::min);
-        let max = chart.bars.iter().copied().flatten().fold(0.0, f64::max);
+    fn energy_chart(
+        &mut self,
+        chart: &crate::energy::Chart,
+        price: Option<f64>,
+        show_cost: bool,
+        p: &Palette,
+    ) {
+        let scale = price.filter(|_| show_cost).unwrap_or(1.0);
+        let min = chart.bars.iter().copied().flatten().fold(0.0, f64::min) * scale;
+        let max = chart.bars.iter().copied().flatten().fold(0.0, f64::max) * scale;
         let max = if min == max { 1.0 } else { max };
         let (left, width, top, bottom) = (391, 563, 268, 475);
         let plot_y = |value: f64| {
             top + ((max - value) / (max - min) * (bottom - top) as f64).round() as usize
         };
         let zero = plot_y(0.0);
-        self.raw_text(308, 251, chart.unit, 16, p.muted, 384);
+        self.raw_text(
+            308,
+            251,
+            if show_cost { "€" } else { chart.unit },
+            16,
+            p.muted,
+            384,
+        );
         for step in 0..=4 {
             let value = max - (max - min) * f64::from(step) / 4.0;
             let y = plot_y(value);
             self.panel(Rect(left, y, width, 1), p.raised, 0);
-            self.raw_text(308, y + 5, &format!("{value:.2}"), 15, p.muted, 384);
+            let decimals = if show_cost && max < 0.05 { 4 } else { 2 };
+            self.raw_text(308, y + 5, &format!("{value:.decimals$}"), 15, p.muted, 384);
         }
         self.panel(Rect(left, zero, width, 1), p.muted, 0);
         for (index, value) in chart.bars.iter().enumerate() {
@@ -2848,7 +2878,7 @@ impl Ui {
             }
             self.buttons.push((area, Action::EnergyBucket(index)));
             if let Some(value) = value {
-                let y = plot_y(*value);
+                let y = plot_y(*value * scale);
                 self.panel(
                     Rect(
                         x + 2,
@@ -2868,7 +2898,12 @@ impl Ui {
         if let Some(index) = self.energy_bucket.filter(|&index| index < chart.bars.len()) {
             let value = chart.bars[index].map_or_else(
                 || self.language.translate("No reading").into(),
-                |value| format!("{value:.2} {}", chart.unit),
+                |value| {
+                    let usage = format!("{value:.2} {}", chart.unit);
+                    price.map_or(usage.clone(), |price| {
+                        format!("{usage}   ·   {}", interval_cost(value * price))
+                    })
+                },
             );
             let (from, to) = chart.bucket_bounds(index);
             self.raw_text(
@@ -2902,12 +2937,20 @@ impl Ui {
         }
     }
 
-    fn energy_table(&mut self, chart: &crate::energy::Chart, p: &Palette) {
+    fn energy_table(&mut self, chart: &crate::energy::Chart, price: Option<f64>, p: &Palette) {
         let count = chart.bars.len();
         let page = self.energy_page.min(count.saturating_sub(1) / 5);
-        self.text(318, 263, "Time range", 16, p.muted, 643);
-        self.text(646, 263, "Reading", 16, p.muted, 801);
-        self.text(810, 263, "Data quality", 16, p.muted, 961);
+        let (reading_x, reading_end, quality_x) = if price.is_some() {
+            (590, 710, 832)
+        } else {
+            (646, 800, 810)
+        };
+        self.text(318, 263, "Time range", 16, p.muted, reading_x - 8);
+        self.text(reading_x, 263, "Reading", 16, p.muted, reading_end);
+        if price.is_some() {
+            self.text(721, 263, "Est. cost", 16, p.muted, 824);
+        }
+        self.text(quality_x, 263, "Data quality", 16, p.muted, 961);
         for (row, index) in (0..count).rev().skip(page * 5).take(5).enumerate() {
             let y = 275 + row * 40;
             if row % 2 == 0 {
@@ -2920,7 +2963,7 @@ impl Ui {
                 &format!("{} – {}", energy_stamp(from), energy_stamp(to)),
                 17,
                 p.text,
-                638,
+                reading_x - 8,
             );
             let (value, quality) = match chart.bars[index] {
                 Some(value) => (
@@ -2933,8 +2976,13 @@ impl Ui {
                 ),
                 None => ("—".into(), "No reading"),
             };
-            self.raw_text(646, y + 25, &value, 17, p.text, 799);
-            self.text(810, y + 25, quality, 17, p.muted, 958);
+            self.raw_text(reading_x, y + 25, &value, 17, p.text, reading_end);
+            if let Some(price) = price {
+                let cost = chart.bars[index]
+                    .map_or_else(|| "—".into(), |value| interval_cost(value * price));
+                self.raw_text(721, y + 25, &cost, 17, p.text, 824);
+            }
+            self.text(quality_x, y + 25, quality, 17, p.muted, 958);
         }
         if page > 0 {
             self.button(
@@ -4335,6 +4383,21 @@ struct TextEntry {
     text: String,
     symbols: bool,
     shift: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EnergyDisplay {
+    Usage,
+    Cost,
+    Table,
+}
+
+fn interval_cost(cost: f64) -> String {
+    if cost > 0.0 && cost < 0.01 {
+        "<€0.01".into()
+    } else {
+        format!("€{cost:.2}")
+    }
 }
 
 fn energy_stamp(seconds: u64) -> String {

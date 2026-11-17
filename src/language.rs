@@ -408,6 +408,8 @@ impl Language {
             "Recorded total" => "Gemeten totaal",
             "Earlier" => "Eerder",
             "Chart" => "Grafiek",
+            "Cost" => "Kosten",
+            "Est. cost" => "Gesch. kosten",
             "Homepage layout" => "Startschermindeling",
             "Software updates" => "Software-updates",
             "Remote access" => "Externe toegang",
