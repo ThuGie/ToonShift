@@ -109,6 +109,11 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         } else {
             plugins::Appearance::Day
         },
+        energy_rates: energy::Rates {
+            standard: Some(23_780),
+            off_peak: Some(23_780),
+            gas: Some(116_386),
+        },
         ..Default::default()
     };
     let root = Path::new(".");
@@ -142,8 +147,8 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         unit: "kWh",
         total: Some(5.78),
         partial: true,
-        from: 0,
-        to: 86400,
+        from: 1_794_852_000,
+        to: 1_794_938_400,
         tariff_usage: [None; 2],
     });
     let status = thermostat::Status {
@@ -232,10 +237,14 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         Some("settings") => {
             ui.hit(750, 40);
         }
-        Some("energy") => {
+        Some("energy" | "energy-selected" | "energy-table") => {
             ui.hit(560, 40);
             ui.draw(&view);
-            ui.hit(590, 403);
+            if page.as_deref() == Some("energy-table") {
+                ui.hit(685, 195);
+            } else if page.as_deref() == Some("energy-selected") {
+                ui.hit(696, 400);
+            }
         }
         _ => {}
     }

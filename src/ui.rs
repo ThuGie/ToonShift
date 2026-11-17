@@ -2676,10 +2676,10 @@ impl Ui {
     fn energy(&mut self, view: &View<'_>, p: &Palette) {
         use crate::energy::{Meter, Period};
         let (meter, period) = self.energy;
-        self.panel(Rect(32, 100, 960, 448), p.card, 26);
+        self.panel(Rect(32, 96, 960, 459), p.card, 26);
         for (index, choice) in Meter::ALL.into_iter().enumerate() {
             self.button(
-                Rect(54 + 184 * index, 117, 172, 48),
+                Rect(52 + 184 * index, 112, 176, 48),
                 choice.title(),
                 p,
                 choice == meter,
@@ -2688,7 +2688,7 @@ impl Ui {
         }
         for (index, choice) in Period::ALL.into_iter().enumerate() {
             self.button(
-                Rect(54 + 184 * index, 177, 172, 43),
+                Rect(52 + 94 * index, 175, 86, 44),
                 choice.title(),
                 p,
                 choice == period,
@@ -2696,114 +2696,163 @@ impl Ui {
             );
         }
         self.button(
-            Rect(754, 231, 215, 45),
-            "Energy rates",
-            p,
-            false,
-            Action::EnergyRates,
-        );
-        let live_metric = meter.selected_metric();
-        if let Some(metric) = live_metric {
-            let live = crate::telemetry::display(metric, view.telemetry);
-            self.raw_text(
-                56,
-                242,
-                &format!(
-                    "{} · {}",
-                    self.language.translate("Live"),
-                    self.language.translate(&live)
-                ),
-                17,
-                p.muted,
-                292,
-            );
-        }
-        self.button(
-            Rect(305, 231, 111, 43),
+            Rect(535, 175, 95, 44),
             "Chart",
             p,
             !self.energy_table,
             Action::EnergyTable(false),
         );
         self.button(
-            Rect(425, 231, 111, 43),
+            Rect(638, 175, 95, 44),
             "Table",
             p,
             self.energy_table,
             Action::EnergyTable(true),
         );
-        let chart = match view.energy {
-            Some(Ok(chart)) => chart,
-            Some(Err(error)) => {
-                self.text(56, 281, error, 22, p.muted, 963);
-                return;
-            }
-            None => {
-                self.text(56, 281, "Loading meter history…", 22, p.muted, 963);
-                return;
-            }
+        self.button(
+            Rect(758, 175, 206, 44),
+            "Energy rates",
+            p,
+            false,
+            Action::EnergyRates,
+        );
+
+        let chart = view.energy.and_then(|result| result.as_ref().ok());
+        let metric = meter.selected_metric();
+        self.panel(Rect(52, 233, 234, 304), p.raised, 18);
+        self.text(70, 268, meter.title(), 22, p.text, 269);
+        if let Some(metric) = metric {
+            let reading = crate::telemetry::display(metric, view.telemetry);
+            self.raw_text(
+                70,
+                300,
+                &format!(
+                    "{} · {}",
+                    self.language.translate("Live"),
+                    self.language.translate(&reading)
+                ),
+                16,
+                p.muted,
+                271,
+            );
+        }
+        self.panel(Rect(70, 318, 198, 1), p.muted, 0);
+
+        let values = || {
+            chart
+                .into_iter()
+                .flat_map(|chart| chart.bars.iter().copied().flatten())
         };
-        let values = || chart.bars.iter().copied().flatten();
+        let recorded = values().count();
+        let summary = match period {
+            Period::Hour => (recorded > 0).then(|| values().sum::<f64>() / recorded as f64),
+            _ => chart.and_then(|chart| chart.total),
+        };
+        self.text(
+            70,
+            346,
+            if period == Period::Hour {
+                "Average per interval"
+            } else {
+                "Recorded total"
+            },
+            16,
+            p.muted,
+            271,
+        );
+        let total = summary.zip(chart).map_or_else(
+            || "—".into(),
+            |(value, chart)| format!("{value:.2} {}", chart.unit),
+        );
+        self.raw_text(70, 380, &total, 27, p.text, 272);
+        if let Some(cost) =
+            chart.and_then(|chart| chart.estimated_cost(meter, view.settings.energy_rates))
+        {
+            self.text(70, 415, "Estimated cost", 16, p.muted, 271);
+            self.raw_text(70, 449, &format!("€{cost:.2}"), 29, p.accent, 272);
+        }
+        if period != Period::Hour {
+            if let Some(price) = view.settings.energy_rates.flat_price(meter) {
+                self.raw_text(
+                    70,
+                    513,
+                    &format!("€{price:.5} / {}", meter.unit(period)),
+                    16,
+                    p.muted,
+                    269,
+                );
+            }
+        }
+        if recorded > 0 && chart.is_some_and(|chart| chart.partial) {
+            self.text(70, 480, "Incomplete readings", 15, p.muted, 272);
+        }
+
+        let Some(chart) = chart else {
+            let message = match view.energy {
+                Some(Err(error)) => error.as_str(),
+                _ => "Loading meter history…",
+            };
+            self.text(311, 278, message, 21, p.muted, 959);
+            return;
+        };
         if self.energy_table {
             self.energy_table(chart, p);
             return;
         }
-        if values().next().is_none() {
+        if recorded == 0 {
+            let recording = metric.is_some_and(|metric| {
+                view.settings.meter_sources.contains_key(&metric)
+                    && crate::telemetry::current(metric, view.telemetry).is_some()
+            });
             self.text(
-                56,
-                281,
-                if live_metric.is_some_and(|metric| {
-                    view.settings.meter_sources.contains_key(&metric)
-                        && crate::telemetry::current(metric, view.telemetry).is_some()
-                }) {
+                311,
+                278,
+                if recording {
                     "Recording selected meter history. Usage needs two samples."
                 } else {
                     "No meter readings in this period."
                 },
-                22,
+                19,
                 p.muted,
-                963,
+                959,
             );
             return;
         }
-        let min = values().fold(0.0, f64::min);
-        let max = values().fold(0.0, f64::max);
+        self.energy_chart(chart, p);
+    }
+
+    fn energy_chart(&mut self, chart: &crate::energy::Chart, p: &Palette) {
+        let min = chart.bars.iter().copied().flatten().fold(0.0, f64::min);
+        let max = chart.bars.iter().copied().flatten().fold(0.0, f64::max);
         let max = if min == max { 1.0 } else { max };
-        let scale = (max - min).max(1e-6);
-        let top = 303;
-        let bottom = 490;
-        let plot_y =
-            |value: f64| top + ((max - value) / scale * (bottom - top) as f64).round() as usize;
-        let zero = if min == max { bottom } else { plot_y(0.0) };
-        let left = 161;
-        let width = 797;
+        let (left, width, top, bottom) = (391, 563, 268, 475);
+        let plot_y = |value: f64| {
+            top + ((max - value) / (max - min) * (bottom - top) as f64).round() as usize
+        };
+        let zero = plot_y(0.0);
+        self.raw_text(308, 251, chart.unit, 16, p.muted, 384);
         for step in 0..=4 {
             let value = max - (max - min) * f64::from(step) / 4.0;
             let y = plot_y(value);
             self.panel(Rect(left, y, width, 1), p.raised, 0);
-            let label = if step == 0 {
-                format!("{value:.2} {}", chart.unit)
-            } else {
-                format!("{value:.2}")
-            };
-            self.raw_text(57, y + 5, &label, 16, p.muted, 156);
+            self.raw_text(308, y + 5, &format!("{value:.2}"), 15, p.muted, 384);
         }
         self.panel(Rect(left, zero, width, 1), p.muted, 0);
         for (index, value) in chart.bars.iter().enumerate() {
             let x = left + index * width / chart.bars.len();
             let next = left + (index + 1) * width / chart.bars.len();
             let area = Rect(x, top, next - x, bottom - top + 1);
-            if self.energy_bucket == Some(index) {
+            let selected = self.energy_bucket == Some(index);
+            if selected {
                 self.panel(area, p.raised, 0);
-                self.panel(Rect(x, zero, next - x, 1), p.muted, 0);
             }
             self.buttons.push((area, Action::EnergyBucket(index)));
             if let Some(value) = value {
-                let y = if *value == 0.0 { zero } else { plot_y(*value) };
+                let y = plot_y(*value);
                 self.panel(
                     Rect(
                         x + 2,
-                        y.min(zero),
+                        y.min(zero).min(bottom - 2),
                         (next - x).saturating_sub(4).max(1),
                         y.abs_diff(zero).max(2),
                     ),
@@ -2816,101 +2865,62 @@ impl Ui {
                 );
             }
         }
-        let summary = chart.total.map_or_else(
-            || self.language.translate("Average per interval").to_owned(),
-            |total| {
-                format!(
-                    "{} {total:.2} {}",
-                    self.language.translate("Recorded total"),
-                    chart.unit
-                )
-            },
-        );
-        self.text(56, 284, &summary, 22, p.text, 395);
-        if let Some(cost) = chart.estimated_cost(meter, view.settings.energy_rates) {
-            self.text(
-                412,
-                284,
-                &format!("{} €{cost:.2}", self.language.translate("Estimated cost")),
-                21,
-                p.text,
-                745,
-            );
-        }
-        self.text(
-            162,
-            521,
-            if self.energy_bucket.is_none() {
-                "Earlier"
-            } else {
-                ""
-            },
-            17,
-            p.muted,
-            480,
-        );
-        self.text(
-            865,
-            521,
-            self.language.translate("Latest"),
-            17,
-            p.muted,
-            960,
-        );
         if let Some(index) = self.energy_bucket.filter(|&index| index < chart.bars.len()) {
             let value = chart.bars[index].map_or_else(
                 || self.language.translate("No reading").into(),
                 |value| format!("{value:.2} {}", chart.unit),
             );
-            let quality = if chart.partial_bars[index] {
-                self.language.translate("Incomplete readings")
-            } else {
-                ""
-            };
             let (from, to) = chart.bucket_bounds(index);
             self.raw_text(
-                162,
-                521,
+                310,
+                506,
                 &format!(
-                    "{} – {}   ·   {value}   {quality}",
+                    "{} – {}   ·   {value}",
                     energy_stamp(from),
                     energy_stamp(to)
                 ),
                 17,
                 p.text,
-                852,
+                960,
             );
-        } else if chart.partial {
-            self.text(
-                460,
-                521,
-                "Gaps and muted bars indicate missing data",
-                17,
-                p.muted,
-                855,
-            );
+            if chart.partial_bars[index] && chart.bars[index].is_some() {
+                self.text(310, 531, "Incomplete readings", 15, p.muted, 960);
+            }
+        } else {
+            self.text(391, 504, "Earlier", 16, p.muted, 515);
+            self.text(868, 504, "Latest", 16, p.muted, 960);
+            if chart.partial {
+                self.text(
+                    391,
+                    531,
+                    "Gaps and muted bars indicate missing data",
+                    15,
+                    p.muted,
+                    960,
+                );
+            }
         }
     }
 
     fn energy_table(&mut self, chart: &crate::energy::Chart, p: &Palette) {
         let count = chart.bars.len();
         let page = self.energy_page.min(count.saturating_sub(1) / 5);
-        self.text(56, 301, "Time range", 16, p.muted, 495);
-        self.text(503, 301, "Reading", 16, p.muted, 708);
-        self.text(741, 301, "Data quality", 16, p.muted, 961);
+        self.text(318, 263, "Time range", 16, p.muted, 643);
+        self.text(646, 263, "Reading", 16, p.muted, 801);
+        self.text(810, 263, "Data quality", 16, p.muted, 961);
         for (row, index) in (0..count).rev().skip(page * 5).take(5).enumerate() {
-            let y = 310 + row * 35;
+            let y = 275 + row * 40;
             if row % 2 == 0 {
-                self.panel(Rect(48, y, 920, 34), p.raised, 7);
+                self.panel(Rect(308, y, 656, 37), p.raised, 7);
             }
             let (from, to) = chart.bucket_bounds(index);
             self.raw_text(
-                56,
-                y + 23,
+                318,
+                y + 25,
                 &format!("{} – {}", energy_stamp(from), energy_stamp(to)),
                 17,
                 p.text,
-                485,
+                638,
             );
             let (value, quality) = match chart.bars[index] {
                 Some(value) => (
@@ -2923,12 +2933,12 @@ impl Ui {
                 ),
                 None => ("—".into(), "No reading"),
             };
-            self.raw_text(503, y + 23, &value, 18, p.text, 710);
-            self.text(741, y + 23, quality, 17, p.muted, 963);
+            self.raw_text(646, y + 25, &value, 17, p.text, 799);
+            self.text(810, y + 25, quality, 17, p.muted, 958);
         }
         if page > 0 {
             self.button(
-                Rect(52, 492, 135, 42),
+                Rect(308, 487, 135, 43),
                 "Newer",
                 p,
                 false,
@@ -2937,7 +2947,7 @@ impl Ui {
         }
         if (page + 1) * 5 < count {
             self.button(
-                Rect(827, 492, 135, 42),
+                Rect(829, 487, 135, 43),
                 "Older",
                 p,
                 false,
@@ -2945,12 +2955,12 @@ impl Ui {
             );
         }
         self.raw_text(
-            437,
-            519,
+            602,
+            515,
             &format!("{} / {}", page + 1, count.div_ceil(5).max(1)),
             17,
             p.muted,
-            590,
+            700,
         );
     }
 
