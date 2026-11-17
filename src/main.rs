@@ -373,6 +373,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     heating_inputs.lock().unwrap().enabled = settings.heating_advice;
     let (commands, updates) = thermostat::worker(root.to_owned(), heating_inputs.clone());
     let api_events = std::sync::Arc::new(api::Events::with_energy(root));
+    api_events.enable_gas_window(settings.meter_sources.contains_key(&plugins::Metric::Gas));
     let remote = remote::Remote::start(
         root,
         commands.clone(),
@@ -1644,7 +1645,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             != next.meter_sources.get(&plugins::Metric::Gas)
                         {
                             gas_window = energy::GasWindow::default();
-                            api_events.publish_gas_window(None, std::time::Instant::now());
+                            api_events.enable_gas_window(
+                                next.meter_sources.contains_key(&plugins::Metric::Gas),
+                            );
                         }
                         home_usage = None;
                         home_usage_due = std::time::Instant::now();

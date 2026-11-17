@@ -33,9 +33,16 @@ struct Snapshot {
     readings_revision: u64,
     readings: crate::telemetry::Readings,
     gas_window: Option<(f64, u64, std::time::Instant)>,
+    gas_window_enabled: bool,
 }
 
 impl Events {
+    pub fn enable_gas_window(&self, enabled: bool) {
+        let mut snapshot = self.snapshot.lock().unwrap();
+        snapshot.gas_window_enabled = enabled;
+        snapshot.gas_window = None;
+    }
+
     pub fn publish_gas_window(&self, reading: Option<(f64, u64)>, at: std::time::Instant) {
         self.snapshot.lock().unwrap().gas_window =
             reading.map(|(liters, seconds)| (liters, seconds, at));
@@ -563,7 +570,11 @@ pub(crate) fn handle_with(
             let readings = Events::format_readings(&snapshot.readings);
             let gas_recent = snapshot.gas_window.filter(|(_, _, at)| at.elapsed().as_secs() <= 35)
                 .map(|(liters, seconds, at)| json!({"value":liters,"unit":"L","window_seconds":seconds,"age_seconds":at.elapsed().as_secs()}));
-            Ok(("200 OK", json!({"electricity":readings["electricity"],"gas":readings["gas"],"gas_recent":gas_recent})))
+            let mut live = json!({"electricity":readings["electricity"],"gas":readings["gas"]});
+            if snapshot.gas_window_enabled {
+                live["gas_recent"] = json!(gas_recent);
+            }
+            Ok(("200 OK", live))
         }
         ("GET", "/v1/status") => Ok(match thermostat::status() {
             Ok(status) => ("200 OK", json!(status)),
