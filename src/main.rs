@@ -211,7 +211,7 @@ fn preview(mut args: impl Iterator<Item = String>) -> std::io::Result<()> {
         diagnostics_message: None,
         firmware_version: None,
         history: None,
-        ambient: false,
+        ambient: page.as_deref() == Some("idle"),
         location_results: None,
     };
     let mut ui = ui::Ui::new();
@@ -533,6 +533,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut extension_poll = std::time::Instant::now();
     let submit_extension = |generation,
                             readings: &telemetry::Readings,
+                            boiler: Option<serde_json::Value>,
                             (plugin, allowed, origin, mut event): (
         plugins::Plugin,
         bool,
@@ -542,6 +543,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         event.telemetry = telemetry::plugin_snapshot(&plugin.telemetry, readings);
         let sender = extension_sender.clone();
         std::thread::spawn(move || {
+            if let Some(mut boiler) = boiler {
+                if matches!(event.action.as_str(), "open" | "refresh") {
+                    boiler["limits"] = thermostat::plugin_boiler_limits().unwrap_or_default();
+                }
+                event.telemetry["boiler_diagnostics"] = boiler;
+            }
             let result = plugin_screen::run_installed(root, &plugin, allowed, origin, event);
             let _ = sender.send((generation, result));
         });
@@ -641,7 +648,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             extension_poll = std::time::Instant::now();
             if let Some(job) = ui.extension_event(None, true) {
                 extension_busy = true;
-                submit_extension(extension_generation, &telemetry, job);
+                let boiler = job.0.boiler_diagnostics.then(|| {
+                    thermostat::plugin_boiler_snapshot(
+                        boiler_protocol,
+                        boiler_module,
+                        status.as_ref(),
+                    )
+                });
+                submit_extension(extension_generation, &telemetry, boiler, job);
             }
         }
         if let Ok((sources, result)) = meter_receiver.try_recv() {
@@ -1156,7 +1170,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else if let Some(job) = ui.extension_event(button, false) {
                     extension_busy = true;
                     extension_poll = std::time::Instant::now();
-                    submit_extension(extension_generation, &telemetry, job);
+                    let boiler = job.0.boiler_diagnostics.then(|| {
+                        thermostat::plugin_boiler_snapshot(
+                            boiler_protocol,
+                            boiler_module,
+                            status.as_ref(),
+                        )
+                    });
+                    submit_extension(extension_generation, &telemetry, boiler, job);
                 }
                 persist = false;
             }

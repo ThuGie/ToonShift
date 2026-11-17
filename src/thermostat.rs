@@ -41,6 +41,63 @@ pub fn boiler_protocol() -> Result<bool, String> {
         .ok_or_else(|| "Boiler mode unavailable".into())
 }
 
+#[cfg(any(target_os = "linux", test))]
+pub fn plugin_boiler_snapshot(
+    open_therm: Option<bool>,
+    module: Option<bool>,
+    status: Option<&Status>,
+) -> serde_json::Value {
+    use serde_json::json;
+    let ot_status = status.filter(|_| open_therm == Some(true) && module != Some(false));
+    let ot_link = ot_status.and_then(|status| match status.ot_comm_error.as_str() {
+        "1" => Some(false),
+        "0" if matches!(status.burner_info.as_str(), "0" | "1" | "2" | "3") => Some(true),
+        _ => None,
+    });
+    let drive = status
+        .and_then(|s| s.current_modulation_level.parse::<u8>().ok())
+        .filter(|v| *v <= 100);
+    let target = status
+        .and_then(|s| s.current_internal_boiler_setpoint.parse::<u8>().ok())
+        .filter(|v| *v <= 100);
+    json!({
+        "protocol": open_therm.map(|ot| if ot { "opentherm" } else { "relay" }),
+        "module_connected": module,
+        "heat_requested": drive.zip(target).map(|(drive, target)| drive > 0 || target > 6),
+        "opentherm_connected": ot_link,
+        "burner": ot_status.filter(|_| ot_link == Some(true)).and_then(|s| s.burner_info.parse::<u8>().ok()),
+        "requested_flow_celsius": if ot_link == Some(true) { target } else { None },
+        "reported_modulation_percent": if ot_link == Some(true) { drive } else { None }
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn boiler_snapshot_exposes_burner_only_with_opentherm_link() {
+    let status: Status = serde_json::from_str(
+        r#"{"currentTemp":"2000","currentSetpoint":"2100","programState":"0","burnerInfo":"1","connection":"0","nextSetpoint":"0","nextTime":"0","otCommError":"0","currentModulationLevel":"35","currentInternalBoilerSetpoint":"55"}"#,
+    ).unwrap();
+    let relay = plugin_boiler_snapshot(Some(false), Some(true), Some(&status));
+    assert_eq!(relay["heat_requested"], true);
+    assert!(relay["burner"].is_null());
+    let disconnected = plugin_boiler_snapshot(Some(true), Some(false), Some(&status));
+    assert!(disconnected["burner"].is_null());
+    let connected = plugin_boiler_snapshot(Some(true), Some(true), Some(&status));
+    assert_eq!(connected["burner"], 1);
+    assert_eq!(connected["requested_flow_celsius"], 55);
+}
+
+#[cfg(target_os = "linux")]
+pub fn plugin_boiler_limits() -> Option<serde_json::Value> {
+    let replies = crate::boxtalk::thermostat(&["GetChSettings"]).ok()?;
+    let reply = replies.first()?;
+    let max = crate::boxtalk::field(reply, "maxHeaterTemp")?
+        .parse::<f64>()
+        .ok()
+        .filter(|value| (0.0..=120.0).contains(value))?;
+    Some(serde_json::json!({"max_heater_celsius":max}))
+}
+
 pub fn calibration_offset() -> Option<i32> {
     let replies = crate::boxtalk::thermostat(&["GetTempOffset"]).ok()?;
     let offset = crate::boxtalk::field(&replies[0], "offset")?

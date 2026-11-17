@@ -232,8 +232,8 @@ struct Palette {
     on_accent: u32,
 }
 
-fn palette(settings: &Settings, hour: u8) -> Palette {
-    let light = settings.daylight(hour);
+fn palette(settings: &Settings, hour: u8, ambient: bool) -> Palette {
+    let light = !ambient && settings.daylight(hour);
     let (background, card, raised, accent) = match (light, settings.theme) {
         (true, Theme::Midnight) => (0xeaf1f8, 0xffffff, 0xdce9f5, 0x095abb),
         (true, Theme::Forest) => (0xe7f1eb, 0xffffff, 0xd7ebdf, 0x167050),
@@ -1117,7 +1117,7 @@ impl Ui {
 
     pub fn draw(&mut self, view: &View<'_>) {
         self.language = view.settings.language;
-        let p = palette(view.settings, view.hour);
+        let p = palette(view.settings, view.hour, view.ambient);
         self.pixels.fill(p.background);
         self.buttons.clear();
         if view.ambient {
@@ -1325,7 +1325,8 @@ impl Ui {
             Some(index) => extension.screen.buttons.get(index)?.id.clone(),
             None if automatic
                 && extension.editing.is_none()
-                && !extension.plugin.telemetry.is_empty() =>
+                && (!extension.plugin.telemetry.is_empty()
+                    || extension.plugin.boiler_diagnostics) =>
             {
                 "telemetry".into()
             }
@@ -1369,7 +1370,10 @@ impl Ui {
             Ok((screen, state)) => {
                 extension.screen = screen;
                 extension.state = state;
-                extension.page = 0;
+                let last_page = (extension.screen.fields.len() + extension.screen.buttons.len())
+                    .saturating_sub(1)
+                    / 8;
+                extension.page = extension.page.min(last_page);
             }
             Err(error) => extension.error = Some(error),
         }
@@ -4238,6 +4242,26 @@ pub struct SoftwareUpdates {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
+
+    #[test]
+    fn idle_uses_dark_palette_even_with_day_appearance() {
+        let settings = Settings {
+            appearance: Appearance::Day,
+            ..Settings::default()
+        };
+        assert_ne!(
+            palette(&settings, 12, false).background,
+            palette(&settings, 12, true).background
+        );
+        let night = Settings {
+            appearance: Appearance::Night,
+            ..settings
+        };
+        assert_eq!(
+            palette(&night, 12, false).background,
+            palette(&night, 12, true).background
+        );
+    }
 
     #[test]
     fn drag_crosses_into_a_partial_page_and_back() {

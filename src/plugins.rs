@@ -45,6 +45,8 @@ pub struct Plugin {
     #[serde(default)]
     pub telemetry: Vec<Metric>,
     #[serde(default)]
+    pub boiler_diagnostics: bool,
+    #[serde(default)]
     pub text: String,
     #[serde(default)]
     pub release: String,
@@ -618,7 +620,7 @@ fn valid_plugin(plugin: &Plugin) -> bool {
             .collect::<HashSet<_>>()
             .len()
             == plugin.telemetry.len()
-        && (plugin.telemetry.is_empty()
+        && (plugin.telemetry.is_empty() && !plugin.boiler_diagnostics
             || (matches!(plugin.source, Source::Interactive)
                 && plugin.https_hosts.is_empty()
                 && !plugin.user_https_origin
@@ -760,6 +762,7 @@ pub fn catalog(root: &Path) -> Vec<Plugin> {
                         plugin.user_https_origin = installed.user_https_origin;
                         plugin.lan_read_path = installed.lan_read_path;
                         plugin.telemetry = installed.telemetry;
+                        plugin.boiler_diagnostics = installed.boiler_diagnostics;
                         plugin.text = installed.text;
                         plugin.source = installed.source;
                     }

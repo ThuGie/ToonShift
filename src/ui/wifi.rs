@@ -458,7 +458,7 @@ mod tests {
             auth: "WPA2".into(),
             signal: String::new(),
         }));
-        let p = palette(&Default::default(), 12);
+        let p = palette(&Default::default(), 12, false);
         let form = ui.wifi.take().unwrap();
         ui.wifi_keyboard(&form, &p);
         ui.wifi = Some(form);
