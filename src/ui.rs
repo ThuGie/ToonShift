@@ -1502,18 +1502,18 @@ impl Ui {
                 let slot = index % 8;
                 let (label, action) = if let Some(field) = extension.screen.fields.get(index) {
                     if field.readonly {
-                        self.raw_text(
-                            72 + slot % 2 * 462,
-                            230 + slot / 2 * 59,
-                            if field.secret {
-                                &field.label
-                            } else {
-                                &field.value
-                            },
-                            17,
-                            p.muted,
-                            498 + slot % 2 * 462,
-                        );
+                        let x = 56 + slot % 2 * 462;
+                        let y = 197 + slot / 2 * 59;
+                        let value = field
+                            .value
+                            .strip_prefix(&field.label)
+                            .and_then(|suffix| suffix.strip_prefix(" · "))
+                            .unwrap_or(&field.value);
+                        self.panel(Rect(x, y, 445, 54), p.raised, 12);
+                        self.raw_text(x + 16, y + 20, &field.label, 15, p.muted, x + 429);
+                        if !field.secret {
+                            self.raw_text(x + 16, y + 44, value, 21, p.text, x + 429);
+                        }
                         continue;
                     }
                     (&field.label, Action::ExtensionField(Some(index)))
