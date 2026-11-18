@@ -822,6 +822,7 @@ pub struct Settings {
     pub night_start: u8,
     pub day_brightness: u8,
     pub night_brightness: u8,
+    pub idle_brightness: Option<u8>,
     pub idle_minutes: u8,
     pub idle_dashboard_page: Option<usize>,
 }
@@ -847,6 +848,7 @@ impl Default for Settings {
             night_start: 20,
             day_brightness: 95,
             night_brightness: 30,
+            idle_brightness: None,
             idle_minutes: 0,
             idle_dashboard_page: None,
         }
@@ -901,6 +903,12 @@ impl HomeLayout {
 }
 
 impl Settings {
+    pub fn effective_idle_brightness(&self) -> u8 {
+        self.idle_brightness
+            .unwrap_or_else(|| self.night_brightness.min(15))
+            .clamp(1, 30)
+    }
+
     pub fn migrate_plugin_ids(&mut self, catalog: &[Plugin]) -> bool {
         let ids: HashSet<_> = self
             .installed

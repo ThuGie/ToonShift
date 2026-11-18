@@ -197,6 +197,10 @@ impl Language {
                 "De widgets zijn pas weer beschikbaar nadat je de bron opnieuw toevoegt."
             }
             "Idle content" => "Inhoud rustscherm",
+            "Idle brightness" => "Helderheid rustscherm",
+            "Tap a bar for details · Swipe to change period" => {
+                "Tik op een balk voor details · Veeg voor een andere periode"
+            }
             "Show dashboard" => "Dashboard tonen",
             "Dashboard page" => "Dashboardpagina",
             "Wide tiles" => "Brede tegels",

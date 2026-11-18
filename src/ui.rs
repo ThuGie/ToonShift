@@ -53,8 +53,15 @@ struct Extension {
     allowed: bool,
     permission: usize,
     approved_origin: Option<String>,
-    busy: bool,
+    work: ExtensionWork,
     error: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExtensionWork {
+    Idle,
+    Background,
+    Foreground,
 }
 
 impl Extension {
@@ -192,6 +199,7 @@ pub enum Action {
     Brightness(bool, i8),
     AppearanceHour(bool, i8),
     IdleMinutes(u8),
+    IdleBrightness(i8),
     IdleDashboard(Option<usize>),
     WideTiles(bool),
     OpenPlugin(usize),
@@ -537,6 +545,10 @@ impl Ui {
             .iter()
             .rev()
             .find(|(rect, _)| rect.contains(x, y))?;
+        self.activate(rect, action)
+    }
+
+    fn activate(&mut self, rect: Rect, action: Action) -> Option<Action> {
         if self.page == Page::Network && self.wifi.is_some() {
             if matches!(
                 action,
@@ -588,6 +600,9 @@ impl Ui {
             }
             Action::ExtensionField(index) => {
                 if let Some(extension) = &mut self.extension {
+                    if extension.work != ExtensionWork::Idle {
+                        return None;
+                    }
                     if let (Some(current), Some(entry)) =
                         (extension.editing, self.repository.take())
                     {
@@ -604,6 +619,14 @@ impl Ui {
                 if let Some(extension) = &mut self.extension {
                     extension.page = page;
                 }
+            }
+            Action::ExtensionButton(_)
+                if self
+                    .extension
+                    .as_ref()
+                    .is_some_and(|extension| extension.work != ExtensionWork::Idle) =>
+            {
+                return None;
             }
             Action::ExtensionAllow => {
                 if let Some(extension) = &mut self.extension {
@@ -950,6 +973,34 @@ impl Ui {
         let dy = from.1.abs_diff(to.1);
         if dx.max(dy) < 28 {
             return self.hit(to.0, to.1);
+        }
+        if self.page == Page::Energy
+            && Rect(308, 233, 656, 304).contains(from.0, from.1)
+            && dx > 100
+            && dx > dy * 2
+        {
+            let forward = from.0 > to.0;
+            let action = if self.energy_display == EnergyDisplay::Table {
+                let next = if forward {
+                    self.energy_page + 1
+                } else {
+                    self.energy_page.checked_sub(1)?
+                };
+                self.buttons.iter().find_map(|(_, action)| {
+                    matches!(action, Action::EnergyRows(page) if *page == next).then_some(*action)
+                })?
+            } else {
+                let (meter, period) = self.energy;
+                let periods = crate::energy::Period::ALL;
+                let index = periods.iter().position(|&choice| choice == period)?;
+                let next = if forward {
+                    index + 1
+                } else {
+                    index.checked_sub(1)?
+                };
+                Action::Energy(meter, *periods.get(next)?)
+            };
+            return self.activate(Rect(from.0, from.1, 1, 1), action);
         }
         if self.page != Page::Home || from.0 < 584 || self.naming_dashboard {
             return None;
@@ -1301,7 +1352,7 @@ impl Ui {
             allowed: false,
             permission: 0,
             approved_origin: None,
-            busy: false,
+            work: ExtensionWork::Idle,
             error: None,
         });
     }
@@ -1315,7 +1366,7 @@ impl Ui {
             return None;
         }
         let extension = self.extension.as_mut()?;
-        if extension.busy {
+        if extension.work != ExtensionWork::Idle {
             return None;
         }
         if button.is_some() && !extension.ready() {
@@ -1333,8 +1384,11 @@ impl Ui {
             None if automatic => return None,
             None => "open".into(),
         };
-        extension.busy = true;
-        extension.error = None;
+        extension.work = if automatic {
+            ExtensionWork::Background
+        } else {
+            ExtensionWork::Foreground
+        };
         Some((
             extension.plugin.clone(),
             extension.allowed,
@@ -1361,21 +1415,29 @@ impl Ui {
     pub fn extension_result(
         &mut self,
         result: Result<(crate::plugin_screen::Screen, serde_json::Value), String>,
-    ) {
+    ) -> bool {
         let Some(extension) = &mut self.extension else {
-            return;
+            return false;
         };
-        extension.busy = false;
+        let was_foreground = extension.work == ExtensionWork::Foreground;
+        extension.work = ExtensionWork::Idle;
         match result {
             Ok((screen, state)) => {
+                let changed = extension.screen != screen || extension.error.is_some();
+                extension.error = None;
                 extension.screen = screen;
                 extension.state = state;
                 let last_page = (extension.screen.fields.len() + extension.screen.buttons.len())
                     .saturating_sub(1)
                     / 8;
                 extension.page = extension.page.min(last_page);
+                was_foreground || changed
             }
-            Err(error) => extension.error = Some(error),
+            Err(error) => {
+                let changed = extension.error.as_ref() != Some(&error);
+                extension.error = Some(error);
+                was_foreground || changed
+            }
         }
     }
 
@@ -1392,7 +1454,7 @@ impl Ui {
             p.text,
             966,
         );
-        let message = if extension.busy {
+        let message = if extension.work == ExtensionWork::Foreground {
             "Working…"
         } else {
             extension
@@ -1433,7 +1495,7 @@ impl Ui {
                 true,
                 Action::ExtensionField(None),
             );
-        } else if !extension.busy {
+        } else if extension.work != ExtensionWork::Foreground {
             let count = extension.screen.fields.len() + extension.screen.buttons.len();
             let field_count = extension.screen.fields.len();
             for index in (extension.page * 8..count).take(8) {
@@ -2922,22 +2984,25 @@ impl Ui {
                 p.text,
                 960,
             );
-            if chart.partial_bars[index] && chart.bars[index].is_some() {
-                self.text(310, 531, "Incomplete readings", 15, p.muted, 960);
+            if chart.bars[index].is_some() {
+                let quality = if chart.partial_bars[index] {
+                    "Incomplete readings"
+                } else {
+                    "Complete"
+                };
+                self.text(310, 531, quality, 15, p.muted, 960);
             }
         } else {
             self.text(391, 504, "Earlier", 16, p.muted, 515);
             self.text(868, 504, "Latest", 16, p.muted, 960);
-            if chart.partial {
-                self.text(
-                    391,
-                    531,
-                    "Gaps and muted bars indicate missing data",
-                    15,
-                    p.muted,
-                    960,
-                );
-            }
+            self.text(
+                391,
+                531,
+                "Tap a bar for details · Swipe to change period",
+                15,
+                p.muted,
+                960,
+            );
         }
     }
 
@@ -3676,6 +3741,23 @@ impl Ui {
     fn display_settings(&mut self, view: &View<'_>, p: &Palette) {
         self.panel(Rect(32, 100, 960, 448), p.card, 26);
         self.text(56, 152, "Display", 30, p.text, 960);
+        let idle = view.settings.effective_idle_brightness();
+        self.text(213, 147, "Idle brightness", 19, p.muted, 407);
+        self.button(
+            Rect(410, 115, 54, 49),
+            "−",
+            p,
+            false,
+            Action::IdleBrightness(-1),
+        );
+        self.text(476, 147, &format!("{idle}%"), 22, p.text, 537);
+        self.button(
+            Rect(548, 115, 54, 49),
+            "+",
+            p,
+            false,
+            Action::IdleBrightness(1),
+        );
         self.button(
             Rect(664, 114, 288, 52),
             "Homepage layout",
@@ -4242,6 +4324,50 @@ pub struct SoftwareUpdates {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
+
+    #[test]
+    fn energy_swipe_changes_chart_period_and_respects_table_bounds() {
+        use crate::energy::{Meter, Period};
+        let mut ui = Ui::new();
+        ui.page = Page::Energy;
+        ui.energy = (Meter::Electricity, Period::Day);
+        assert!(matches!(
+            ui.gesture((800, 320), (550, 325), 0, 4),
+            Some(Action::Energy(Meter::Electricity, Period::Week))
+        ));
+        ui.energy_display = EnergyDisplay::Table;
+        ui.buttons
+            .push((Rect(829, 487, 135, 43), Action::EnergyRows(1)));
+        ui.gesture((800, 320), (550, 325), 0, 4);
+        assert_eq!(ui.energy_page, 1);
+        ui.gesture((800, 320), (550, 325), 0, 4);
+        assert_eq!(ui.energy_page, 1);
+    }
+
+    #[test]
+    fn plugin_poll_keeps_content_visible_and_skips_unchanged_frames() {
+        let mut ui = Ui::new();
+        ui.open_extension(serde_json::from_str(
+            r#"{"id":"test","title":"Test","description":"","source":"interactive","telemetry":["electricity"]}"#,
+        ).unwrap());
+        ui.page = Page::Extension;
+        let screen = || {
+            serde_json::from_str(
+                r#"{"message":"Meter readings","buttons":[{"id":"refresh","label":"Refresh"}]}"#,
+            )
+            .unwrap()
+        };
+        assert!(ui.extension_event(None, false).is_some());
+        assert!(ui.extension_result(Ok((screen(), serde_json::Value::Null))));
+        assert!(ui.extension_event(None, true).is_some());
+        ui.extension_screen(&palette(&Settings::default(), 12, false));
+        assert!(ui
+            .buttons
+            .iter()
+            .any(|(_, action)| matches!(action, Action::ExtensionButton(0))));
+        assert!(!ui.extension_result(Ok((screen(), serde_json::json!({"sample": 2})))));
+        assert_eq!(ui.extension.unwrap().state["sample"], 2);
+    }
 
     #[test]
     fn idle_uses_dark_palette_even_with_day_appearance() {

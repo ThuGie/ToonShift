@@ -640,8 +640,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok((generation, result)) = extension_receiver.try_recv() {
             extension_busy = false;
             if generation == extension_generation {
-                ui.extension_result(result);
-                dirty = true;
+                dirty |= ui.extension_result(result);
             }
         }
         if !extension_busy && !ambient && extension_poll.elapsed() >= Duration::from_secs(5) {
@@ -999,7 +998,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let hour = *hour;
             let daylight = settings.daylight(hour);
             let brightness = if ambient {
-                settings.night_brightness.min(15)
+                settings.effective_idle_brightness()
             } else if daylight {
                 settings.day_brightness
             } else {
@@ -1280,6 +1279,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
             }
             Some(Action::IdleMinutes(minutes)) => next.idle_minutes = minutes,
+            Some(Action::IdleBrightness(offset)) => {
+                let current = next.effective_idle_brightness();
+                next.idle_brightness =
+                    Some((i16::from(current) + i16::from(offset)).clamp(1, 30) as u8);
+            }
             Some(Action::IdleDashboard(page)) => next.idle_dashboard_page = page,
             Some(Action::WideTiles(wide)) => {
                 next.wide_tiles = wide;

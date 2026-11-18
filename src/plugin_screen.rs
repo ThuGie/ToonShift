@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, PartialEq, Eq)]
 pub struct Screen {
     #[serde(default)]
     pub message: String,
@@ -12,7 +12,7 @@ pub struct Screen {
     pub buttons: Vec<Button>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 pub struct Field {
     pub id: String,
     pub label: String,
@@ -24,7 +24,7 @@ pub struct Field {
     pub readonly: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 pub struct Button {
     pub id: String,
     pub label: String,
