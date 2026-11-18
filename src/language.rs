@@ -442,6 +442,7 @@ impl Language {
                 "Externe toegang kon niet starten. Controleer het LAN-adres."
             }
             "Allow control" => "Bediening toestaan",
+            "Allow read access" => "Leestoegang toestaan",
             "Scan with ToonShift Android" => "Scan met ToonShift Android",
             "This code expires after two minutes." => "Deze code verloopt na twee minuten.",
             "Pair phone" => "Telefoon koppelen",

@@ -3920,7 +3920,7 @@ impl Ui {
             Action::Settings,
         );
         let Some(remote) = view.remote else { return };
-        if let Some((name, code)) = &remote.approval {
+        if let Some((name, code, read_only)) = &remote.approval {
             self.text(
                 56,
                 219,
@@ -3940,7 +3940,11 @@ impl Ui {
             );
             self.button(
                 Rect(706, 463, 256, 55),
-                "Allow control",
+                if *read_only {
+                    "Allow read access"
+                } else {
+                    "Allow control"
+                },
                 p,
                 true,
                 Action::RemoteApprove,
@@ -4476,7 +4480,7 @@ pub struct RemoteView {
     pub address: Option<std::net::Ipv4Addr>,
     pub addresses: Vec<std::net::Ipv4Addr>,
     pub qr: Option<String>,
-    pub approval: Option<(String, String)>,
+    pub approval: Option<(String, String, bool)>,
     pub phones: Vec<(String, String)>,
 }
 

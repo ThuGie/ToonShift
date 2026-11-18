@@ -19,6 +19,8 @@ pub struct Phone {
     pub id: String,
     pub name: String,
     verifier: String,
+    #[serde(default)]
+    read_only: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -215,7 +217,7 @@ impl Remote {
                 .filter(|p| p.expires > Instant::now())
             {
                 if let Some((phone, code)) = &pair.phone {
-                    view.approval = Some((phone.name.clone(), code.clone()));
+                    view.approval = Some((phone.name.clone(), code.clone(), phone.read_only));
                 } else {
                     view.qr = Some(json!({"v":1,"host":identity.address.to_string(),"pin":format!("{:x}", Sha256::digest(&identity.cert)),
                         "secret":pair.secret,"id":pair.id}).to_string());
@@ -232,6 +234,8 @@ impl Remote {
             secret: String,
             name: String,
             verifier: String,
+            #[serde(default)]
+            read_only: bool,
         }
         let mut state = self.state.lock().unwrap();
         if !state.enabled || state.generation != generation {
@@ -261,6 +265,7 @@ impl Remote {
                 id: pair.id.clone(),
                 name: claim.name,
                 verifier: claim.verifier,
+                read_only: claim.read_only,
             },
             code.clone(),
         ));
@@ -283,7 +288,13 @@ impl Remote {
             .iter()
             .find(|phone| phone.id == id)?;
         let hash = format!("{:x}", Sha256::digest(secret.as_bytes()));
-        api::equal_secret(hash.as_bytes(), phone.verifier.as_bytes()).then_some(api::Grant::Control)
+        api::equal_secret(hash.as_bytes(), phone.verifier.as_bytes()).then_some(
+            if phone.read_only {
+                api::Grant::Read
+            } else {
+                api::Grant::Control
+            },
+        )
     }
 
     fn listen(self: Arc<Self>, commands: Sender<Work>, events: Arc<api::Events>) {
@@ -638,6 +649,21 @@ mod tests {
         assert_eq!(stored.phones.len(), 1);
         remote.revoke(qr["id"].as_str().unwrap()).unwrap();
         assert!(remote.authorize(generation, &token).is_none());
+        remote.pair().unwrap();
+        let qr: Value = serde_json::from_str(remote.view().qr.as_ref().unwrap()).unwrap();
+        let token = format!("{}.{secret}", qr["id"].as_str().unwrap());
+        let claim = json!({"secret":qr["secret"],"name":"Fixture NAS","verifier":format!("{:x}",Sha256::digest(secret.as_bytes())),"read_only":true});
+        assert_eq!(
+            remote.claim(generation, claim.to_string().as_bytes()).0,
+            "202 Accepted"
+        );
+        assert!(remote.view().approval.unwrap().2);
+        remote.approve().unwrap();
+        assert!(matches!(
+            remote.authorize(generation, &token),
+            Some(api::Grant::Read)
+        ));
+        remote.revoke(qr["id"].as_str().unwrap()).unwrap();
         remote.pair().unwrap();
         remote
             .state
